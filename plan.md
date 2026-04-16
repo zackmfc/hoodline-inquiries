@@ -83,7 +83,7 @@ Priority order:
 2. **Title or near-title** quoted in the email → Discord search in the editorial server for the first ~40 chars of the title; expect to land on the editor's post that contains the title and the edit URL in the same (or adjacent) message.
 3. **Vague reference** ("your article last week about the Mission taqueria that closed") → LLM generates 2–3 candidate search queries; run each against Discord; rank candidates by recency and title similarity; if top candidate isn't ≥0.8 similarity, kick to human triage.
 
-The Discord integration uses a bot account with read access to the editorial channel. Cache the last N days of editor posts in a local index (SQLite + embedding column) so we aren't hammering Discord search on every request.
+The Discord integration uses a bot account with read access to the editorial channel. Cache the last N days of editor posts in a Postgres-backed index (`pgvector` embedding column) so we aren't hammering Discord search on every request.
 
 ### 3.4 Article fetcher
 
@@ -183,7 +183,7 @@ reviewer_action, reviewer_notes
 final_published_at
 ```
 
-SQLite is fine for v1 scale; migrate to Postgres if volume demands.
+PostgreSQL is the system of record from v1 (cases, job state, audit logs, and Discord search cache/index).
 
 ---
 
@@ -193,7 +193,8 @@ SQLite is fine for v1 scale; migrate to Postgres if volume demands.
 - **LLM calls:** Claude (Sonnet for classifier/note-writer, Opus for verification agent where stakes are higher). Structured outputs via JSON mode.
 - **Browser automation:** Playwright (Python).
 - **Gmail:** Gmail API via Google service account with domain-wide delegation.
-- **Discord:** discord.py bot with read permission on the editorial channel; local SQLite index of recent posts with embeddings (OpenAI `text-embedding-3-small` or equivalent) for fuzzy title lookup.
+- **Database:** PostgreSQL 16+ with Alembic migrations; `pgvector` enabled for fuzzy title lookup on cached Discord editorial posts.
+- **Discord:** discord.py bot with read permission on the editorial channel; cached post metadata and embeddings stored in Postgres.
 - **Queue:** Simple Redis + RQ, or just a DB-backed job table if volume is low.
 - **Dashboard:** FastAPI + HTMX + Tailwind. Authentication via Google SSO restricted to the Hoodline domain.
 - **Hosting:** Single small VM is enough. Secrets in a managed secret store.
@@ -239,3 +240,28 @@ SQLite is fine for v1 scale; migrate to Postgres if volume demands.
 4. For the outbound-link check: do you want us to fetch archived versions (Wayback) if the live link has changed, or just take the current state?
 5. Is there an existing house style guide for editor's notes we should encode, beyond the rules you gave me?
 6. Should the dashboard also surface *non-correction* emails the classifier rejected, in case it's wrong?
+
+---
+
+## 9. Dev schedule (Claude Code auto mode estimate)
+
+Start date: **Thursday, April 16, 2026**
+
+Assumption for estimates below: Claude Code runs in auto mode with repo access, Docker running, and required credentials/secrets already provisioned. Estimates are active build time.
+
+| System step | Dates | Claude Code auto-mode estimate |
+|---|---|---|
+| Foundation: Docker + Postgres + migrations + service skeleton | Apr 16–Apr 17, 2026 | 10-12 hours |
+| 3.1 Gmail intake | Apr 20, 2026 | 6-8 hours |
+| 3.2 Classifier | Apr 21, 2026 | 4-6 hours |
+| 3.3 Article resolver | Apr 22–Apr 23, 2026 | 10-14 hours |
+| 3.4 Article fetcher (Playwright + CMS auth/session handling) | Apr 24, 2026 | 8-10 hours |
+| 3.5 Verification agent (links + web grounding + confidence) | Apr 27–Apr 29, 2026 | 18-24 hours |
+| 3.6 Remediation classifier + note writer | Apr 30, 2026 | 5-7 hours |
+| 3.7 Draft stager (CMS draft write, no publish) | May 1–May 4, 2026 | 12-16 hours |
+| 3.8 Review dashboard | May 5–May 7, 2026 | 14-18 hours |
+| End-to-end integration, smoke tests, docs, runbooks | May 8, 2026 | 6-8 hours |
+
+Estimated total active build time: **93-123 hours** (about **2.5-3.5 weeks** elapsed).
+
+Execution expectation per step: run in Docker, validate, commit, and `git push` before moving to the next step.
