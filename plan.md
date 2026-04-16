@@ -253,20 +253,20 @@ Progress update as of **Thursday, April 16, 2026**: `foundation`, `3.1 gmail int
 
 | System step | Status | Dates | Claude Code auto-mode estimate |
 |---|---|---|---|
-| Foundation: Docker + Postgres + migrations + service skeleton | Complete | Apr 16, 2026 | 10-12 hours |
-| 3.1 Gmail intake | Complete | Apr 16, 2026 | 6-8 hours |
-| 3.2 Classifier | Complete | Apr 16, 2026 | 4-6 hours |
-| 3.3 Article resolver | Pending | Apr 20–Apr 21, 2026 | 10-14 hours |
-| 3.4 Article fetcher (Playwright + CMS auth/session handling) | Pending | Apr 22, 2026 | 8-10 hours |
-| 3.5 Verification agent (links + web grounding + confidence) | Pending | Apr 23–Apr 27, 2026 | 18-24 hours |
-| 3.6 Remediation classifier + note writer | Pending | Apr 28, 2026 | 5-7 hours |
-| 3.7 Draft stager (CMS draft write, no publish) | Pending | Apr 29–May 1, 2026 | 12-16 hours |
-| 3.8 Review dashboard | Pending | May 4–May 5, 2026 | 14-18 hours |
-| End-to-end integration, smoke tests, docs, runbooks | Pending | May 6, 2026 | 6-8 hours |
+| Foundation: Docker + Postgres + migrations + service skeleton | Complete | Apr 16, 2026 | 1.0-2.0 hours |
+| 3.1 Gmail intake | Complete | Apr 16, 2026 | 1.0-2.0 hours |
+| 3.2 Classifier | Complete | Apr 16, 2026 | 0.25-0.75 hours |
+| 3.3 Article resolver | Next | Apr 16–Apr 17, 2026 | 1.0-2.0 hours |
+| 3.4 Article fetcher (Playwright + CMS auth/session handling) | Pending | Apr 17, 2026 | 2.0-4.0 hours |
+| 3.5 Verification agent (links + web grounding + confidence) | Pending | Apr 18–Apr 19, 2026 | 4.0-8.0 hours |
+| 3.6 Remediation classifier + note writer | Pending | Apr 20, 2026 | 0.5-1.5 hours |
+| 3.7 Draft stager (CMS draft write, no publish) | Pending | Apr 21, 2026 | 2.0-4.0 hours |
+| 3.8 Review dashboard | Pending | Apr 22, 2026 | 2.0-4.0 hours |
+| End-to-end integration, smoke tests, docs, runbooks | Pending | Apr 23, 2026 | 1.0-2.0 hours |
 
-Estimated completed active build time: **20-26 hours**.
-Estimated remaining active build time: **73-97 hours**.
-Estimated total active build time remains: **93-123 hours**.
-Updated projected completion window: **around May 6, 2026**.
+Estimated completed active build time: **2.25-4.75 hours**.
+Estimated remaining active build time: **12.5-25.5 hours**.
+Estimated total active build time (revised): **14.75-30.25 hours**.
+Updated projected completion window: **around April 23, 2026**.
 
 Execution expectation per step: run in Docker, validate, commit, and `git push` before moving to the next step.

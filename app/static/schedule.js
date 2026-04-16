@@ -57,7 +57,7 @@ function renderSummary() {
   els.taskCount.textContent = String(total);
   els.doneCount.textContent = String(done);
   els.meterFill.style.width = `${progress}%`;
-  els.remainingHours.textContent = remaining.length ? `${remainingMin}-${remainingMax}` : "0";
+  els.remainingHours.textContent = remaining.length ? `${formatHours(remainingMin)}-${formatHours(remainingMax)}` : "0";
 
   if (!remaining.length) {
     els.projectedFinish.textContent = "All tasks completed";
@@ -68,7 +68,7 @@ function renderSummary() {
 
   const daily = Math.max(1, state.hoursPerDay || 6);
   const projected = new Date(now.getTime() + ((remainingMid / daily) * 24 * 60 * 60 * 1000));
-  const scheduleEnd = parseDate("2026-05-08", true);
+  const scheduleEnd = getScheduleEndDate();
   const daysOffset = (projected.getTime() - scheduleEnd.getTime()) / (24 * 60 * 60 * 1000);
 
   els.projectedFinish.textContent = `${projected.toLocaleDateString(undefined, {
@@ -109,7 +109,7 @@ function renderTasks(now) {
 
     title.textContent = task.title;
     dates.textContent = `${fmtDate(task.start)} to ${fmtDate(task.end)}`;
-    hours.textContent = `${task.min}-${task.max}h`;
+    hours.textContent = `${formatHours(task.min)}-${formatHours(task.max)}h`;
 
     const status = getTaskStatus(task, now, checked);
     statusEl.textContent = status.label;
@@ -171,6 +171,16 @@ function parseDate(value, endOfDay) {
     : new Date(year, month - 1, day, 0, 0, 0, 0);
 }
 
+function getScheduleEndDate() {
+  if (!TASKS.length) {
+    return new Date();
+  }
+  const latest = TASKS.reduce((maxEnd, task) => {
+    return task.end > maxEnd ? task.end : maxEnd;
+  }, TASKS[0].end);
+  return parseDate(latest, true);
+}
+
 function loadChecks() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -196,4 +206,12 @@ function saveChecks(value) {
 
 function sum(list) {
   return list.reduce((acc, value) => acc + value, 0);
+}
+
+function formatHours(value) {
+  const num = Number(value);
+  if (Number.isInteger(num)) {
+    return String(num);
+  }
+  return num.toFixed(2).replace(/\.?0+$/, "");
 }
