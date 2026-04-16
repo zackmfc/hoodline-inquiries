@@ -24,6 +24,7 @@ from app.remediation import RemediationEngine
 from app.resolver import ArticleResolver, ResolverConfig
 from app.stager import DraftStager
 from app.storage import PipelineRunRecord, Storage
+from app.verification import VerificationAgent
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = BASE_DIR / "logs"
@@ -64,6 +65,7 @@ article_resolver = ArticleResolver(
 )
 article_fetcher = ArticleFetcher()
 remediation_engine = RemediationEngine()
+verification_agent = VerificationAgent()
 draft_stager = DraftStager(cms_base_url=cms_base_url)
 
 logger = logging.getLogger("hoodline.pipeline")
@@ -131,10 +133,12 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
     {
         "id": "verification",
         "title": "3.5 Verification agent",
-        "start": "2026-04-17",
-        "end": "2026-04-18",
-        "min": 3.0,
-        "max": 6.0,
+        "start": "2026-04-16",
+        "end": "2026-04-16",
+        "min": 0.08,
+        "max": 0.08,
+        "completed": True,
+        "completed_at": "2026-04-16",
     },
     {
         "id": "remediation",
@@ -161,8 +165,8 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
         "title": "3.8 Review dashboard",
         "start": "2026-04-16",
         "end": "2026-04-16",
-        "min": 1.5,
-        "max": 3.0,
+        "min": 0.23,
+        "max": 0.23,
         "completed": True,
         "completed_at": "2026-04-16",
     },
@@ -537,37 +541,24 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
 
     if step_id == "verification":
         claim = inputs.get("specific_claim") or context.get("specific_claim") or ""
-        lowered = claim.lower()
-        confidence = 6
-        if any(term in lowered for term in ["wrong", "incorrect", "inaccurate"]):
-            confidence = 8
-        if any(term in lowered for term in ["might", "maybe", "unclear"]):
-            confidence = 5
+        proposed = inputs.get("proposed_correction") or context.get("proposed_correction") or ""
+        article_body = context.get("meta_description") or ""
+        outbound_links = context.get("outbound_links") or []
+        request_type = context.get("request_type") or "other"
+        headline = context.get("headline") or ""
 
-        if confidence >= 8:
-            action = "editors_note_bottom"
-        elif confidence >= 6:
-            action = "update_stamp"
-        else:
-            action = "needs_human"
+        try:
+            output = verification_agent.verify(
+                specific_claim=claim,
+                proposed_correction=proposed,
+                article_body=article_body,
+                outbound_links=outbound_links if isinstance(outbound_links, list) else [],
+                request_type=request_type,
+                headline=headline,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Verification failed: {exc}") from exc
 
-        output = {
-            "confidence": confidence,
-            "recommended_action": action,
-            "evidence": [
-                {
-                    "source_url": "https://example.gov/source-record",
-                    "quote": "Primary source indicates the corrected date.",
-                    "weight": 0.7,
-                }
-            ],
-            "contradicting_evidence": [],
-            "recommended_edit": {
-                "field": "body",
-                "old_value": "Old statement",
-                "new_value": "Corrected statement based on source",
-            },
-        }
         context.update(output)
         return output
 
@@ -1024,6 +1015,18 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
             article_edit_url=output.get("article_edit_url"),
             fetch_status=output.get("snapshot_status", "unknown"),
             http_status=output.get("public_http_status"),
+            output=output,
+        )
+    if step_id == "verification":
+        storage.save_verification_event(
+            run_id=run_id,
+            case_id=context.get("case_id"),
+            confidence=output.get("confidence"),
+            recommended_action=output.get("recommended_action", "unknown"),
+            backend=output.get("verification_backend", "unknown"),
+            model=output.get("verification_model"),
+            link_checks=output.get("link_checks_performed", 0),
+            search_queries=output.get("search_queries_performed", 0),
             output=output,
         )
     if step_id == "remediation":

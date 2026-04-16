@@ -209,6 +209,23 @@ class Storage:
                     ON review_decisions(run_id)
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS verification_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id TEXT REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+                        case_id TEXT,
+                        confidence INTEGER,
+                        recommended_action TEXT NOT NULL,
+                        backend TEXT NOT NULL,
+                        model TEXT,
+                        link_checks INTEGER NOT NULL DEFAULT 0,
+                        search_queries INTEGER NOT NULL DEFAULT 0,
+                        output_json JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
 
     def create_run(self, run_id: str, created_by: str | None) -> None:
         with self.connect() as conn:
@@ -847,3 +864,39 @@ class Storage:
         if row is None:
             raise RuntimeError("Failed to save review decision")
         return dict(row)
+
+    def save_verification_event(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        confidence: int | None,
+        recommended_action: str,
+        backend: str,
+        model: str | None,
+        link_checks: int,
+        search_queries: int,
+        output: dict[str, Any],
+    ) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO verification_events (
+                        run_id, case_id, confidence, recommended_action,
+                        backend, model, link_checks, search_queries, output_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run_id,
+                        case_id,
+                        confidence,
+                        recommended_action,
+                        backend,
+                        model,
+                        link_checks,
+                        search_queries,
+                        Jsonb(output),
+                    ),
+                )
