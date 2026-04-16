@@ -78,6 +78,22 @@ class Storage:
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classifier_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id TEXT REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+                        case_id TEXT,
+                        backend TEXT NOT NULL,
+                        model TEXT,
+                        sender TEXT,
+                        subject TEXT,
+                        body TEXT,
+                        output_json JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
 
     def create_run(self, run_id: str, created_by: str | None) -> None:
         with self.connect() as conn:
@@ -220,5 +236,45 @@ class Storage:
                         body,
                         matched_keywords,
                         is_candidate,
+                    ),
+                )
+
+    def save_classifier_event(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        backend: str,
+        model: str | None,
+        sender: str,
+        subject: str,
+        body: str,
+        output: dict[str, Any],
+    ) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO classifier_events (
+                        run_id,
+                        case_id,
+                        backend,
+                        model,
+                        sender,
+                        subject,
+                        body,
+                        output_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run_id,
+                        case_id,
+                        backend,
+                        model,
+                        sender,
+                        subject,
+                        body,
+                        Jsonb(output),
                     ),
                 )

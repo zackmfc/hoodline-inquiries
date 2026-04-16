@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.classifier import MessageClassifier
 from app.gmail_client import GmailClient
 from app.storage import PipelineRunRecord, Storage
 
@@ -45,6 +46,7 @@ database_url = os.getenv("DATABASE_URL", "postgresql://hoodline:hoodline@postgre
 
 storage = Storage(database_url)
 gmail_client = GmailClient()
+message_classifier = MessageClassifier()
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -75,7 +77,16 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
         "completed": True,
         "completed_at": "2026-04-16",
     },
-    {"id": "classifier", "title": "3.2 Classifier", "start": "2026-04-17", "end": "2026-04-17", "min": 4, "max": 6},
+    {
+        "id": "classifier",
+        "title": "3.2 Classifier",
+        "start": "2026-04-16",
+        "end": "2026-04-16",
+        "min": 4,
+        "max": 6,
+        "completed": True,
+        "completed_at": "2026-04-16",
+    },
     {
         "id": "resolver",
         "title": "3.3 Article resolver",
@@ -139,8 +150,10 @@ PIPELINE_STEPS: list[dict[str, Any]] = [
     {
         "id": "classifier",
         "label": "3.2 Classifier",
-        "description": "Classify whether the message is a correction request and extract claim fields.",
+        "description": "Classify correction intent with Claude (or rules fallback) and return structured fields.",
         "inputs": [
+            {"key": "backend", "label": "Backend override: auto | claude | rules", "type": "text", "required": False},
+            {"key": "sender", "label": "Sender override (optional)", "type": "text", "required": False},
             {"key": "subject", "label": "Subject override (optional)", "type": "text", "required": False},
             {"key": "body", "label": "Body override (optional)", "type": "textarea", "required": False},
         ],
@@ -347,29 +360,22 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
         return output
 
     if step_id == "classifier":
+        sender = (inputs.get("sender") or context.get("sender") or "").strip()
         subject = inputs.get("subject") or context.get("subject", "")
         body = inputs.get("body") or context.get("body", "")
-        content = f"{subject}\n{body}".lower()
-        request_type = "other"
-        if any(term in content for term in ["wrong", "incorrect", "inaccurate", "error"]):
-            request_type = "factual_error"
-        elif any(term in content for term in ["outdated", "last year", "old data"]):
-            request_type = "outdated_info"
-        elif "missing" in content:
-            request_type = "missing_context"
-
-        is_correction = request_type in {"factual_error", "outdated_info", "missing_context"}
-        article_hint = parse_article_url(body) or parse_article_url(subject) or ""
-        specific_claim = body.split(".")[0].strip() if body else "No claim extracted"
-
-        output = {
-            "is_correction_request": is_correction,
-            "request_type": request_type,
-            "specific_claim": specific_claim,
-            "proposed_correction": "Extracted from sender narrative",
-            "referenced_article_hint": article_hint,
-            "sender_authority_signal": "reader",
-        }
+        backend_override = (inputs.get("backend") or "").strip().lower() or None
+        try:
+            output = message_classifier.classify(
+                sender=sender,
+                subject=subject,
+                body=body,
+                backend_override=backend_override,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        output["sender"] = sender
+        output["subject"] = subject
+        output["body"] = body
         context.update(output)
         return output
 
@@ -497,6 +503,15 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
 def validate_required_inputs(run: PipelineRunRecord, step: dict[str, Any], inputs: dict[str, Any]) -> None:
     # gmail_intake has conditional required fields, validated in execute_step.
     if step["id"] == "gmail_intake":
+        return
+    if step["id"] == "classifier":
+        subject = (inputs.get("subject") or run.context.get("subject") or "").strip()
+        body = (inputs.get("body") or run.context.get("body") or "").strip()
+        if not subject and not body:
+            raise HTTPException(
+                status_code=400,
+                detail="classifier requires subject and/or body from prior step or overrides",
+            )
         return
 
     missing: list[str] = []
@@ -668,6 +683,17 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
             body=output.get("body", ""),
             matched_keywords=output.get("matched_keywords", []),
             is_candidate=bool(output.get("is_candidate")),
+        )
+    if step_id == "classifier":
+        storage.save_classifier_event(
+            run_id=run_id,
+            case_id=context.get("case_id"),
+            backend=output.get("classifier_backend", "unknown"),
+            model=output.get("classifier_model"),
+            sender=output.get("sender", ""),
+            subject=output.get("subject", ""),
+            body=output.get("body", ""),
+            output=output,
         )
 
     step_index = run.current_index

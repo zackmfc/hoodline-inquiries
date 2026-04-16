@@ -249,13 +249,13 @@ Start date: **Thursday, April 16, 2026**
 
 Assumption for estimates below: Claude Code runs in auto mode with repo access, Docker running, and required credentials/secrets already provisioned. Estimates are active build time.
 
-Progress update as of **Thursday, April 16, 2026**: `foundation` and `3.1 gmail intake` are complete.
+Progress update as of **Thursday, April 16, 2026**: `foundation`, `3.1 gmail intake`, and `3.2 classifier` are complete.
 
 | System step | Status | Dates | Claude Code auto-mode estimate |
 |---|---|---|---|
 | Foundation: Docker + Postgres + migrations + service skeleton | Complete | Apr 16, 2026 | 10-12 hours |
 | 3.1 Gmail intake | Complete | Apr 16, 2026 | 6-8 hours |
-| 3.2 Classifier | Next | Apr 17, 2026 | 4-6 hours |
+| 3.2 Classifier | Complete | Apr 16, 2026 | 4-6 hours |
 | 3.3 Article resolver | Pending | Apr 20–Apr 21, 2026 | 10-14 hours |
 | 3.4 Article fetcher (Playwright + CMS auth/session handling) | Pending | Apr 22, 2026 | 8-10 hours |
 | 3.5 Verification agent (links + web grounding + confidence) | Pending | Apr 23–Apr 27, 2026 | 18-24 hours |
@@ -264,8 +264,8 @@ Progress update as of **Thursday, April 16, 2026**: `foundation` and `3.1 gmail 
 | 3.8 Review dashboard | Pending | May 4–May 5, 2026 | 14-18 hours |
 | End-to-end integration, smoke tests, docs, runbooks | Pending | May 6, 2026 | 6-8 hours |
 
-Estimated completed active build time: **16-20 hours**.
-Estimated remaining active build time: **77-103 hours**.
+Estimated completed active build time: **20-26 hours**.
+Estimated remaining active build time: **73-97 hours**.
 Estimated total active build time remains: **93-123 hours**.
 Updated projected completion window: **around May 6, 2026**.
 
