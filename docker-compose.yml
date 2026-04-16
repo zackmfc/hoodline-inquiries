@@ -11,6 +11,10 @@ services:
       APP_SESSION_SECRET: change-this-session-secret
       CMS_BASE_URL: https://hoodline.impress3.com
       DATABASE_URL: postgresql://hoodline:hoodline@postgres:5432/hoodline
+      GMAIL_DELEGATED_USER: ""
+      GMAIL_DEFAULT_QUERY: label:auto/correction-candidate is:unread
+      GMAIL_SERVICE_ACCOUNT_FILE: ""
+      GMAIL_SERVICE_ACCOUNT_JSON: ""
     ports:
       - "8080:8080"
     volumes:

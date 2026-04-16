@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
+
+from app.gmail_client import GmailClient
+from app.storage import PipelineRunRecord, Storage
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = BASE_DIR / "logs"
@@ -39,6 +41,10 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 admin_user = os.getenv("APP_ADMIN_USER", "admin")
 admin_password = os.getenv("APP_ADMIN_PASSWORD", "changeme")
 cms_base_url = os.getenv("CMS_BASE_URL", "https://hoodline.impress3.com")
+database_url = os.getenv("DATABASE_URL", "postgresql://hoodline:hoodline@postgres:5432/hoodline")
+
+storage = Storage(database_url)
+gmail_client = GmailClient()
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -107,11 +113,16 @@ PIPELINE_STEPS: list[dict[str, Any]] = [
     {
         "id": "gmail_intake",
         "label": "3.1 Gmail intake",
-        "description": "Simulate intake filtering from contact@hoodline.com email payload.",
+        "description": "Fetch from Gmail API (delegated service account) or submit manual test input.",
         "inputs": [
-            {"key": "sender", "label": "Sender email", "type": "text", "required": True},
-            {"key": "subject", "label": "Email subject", "type": "text", "required": True},
-            {"key": "body", "label": "Email body", "type": "textarea", "required": True},
+            {"key": "mode", "label": "Mode: manual or gmail_api", "type": "text", "required": False},
+            {"key": "sender", "label": "Sender email (manual mode)", "type": "text", "required": False},
+            {"key": "subject", "label": "Email subject (manual mode)", "type": "text", "required": False},
+            {"key": "body", "label": "Email body (manual mode)", "type": "textarea", "required": False},
+            {"key": "gmail_message_id", "label": "Gmail message ID (gmail_api mode, optional)", "type": "text", "required": False},
+            {"key": "gmail_query", "label": "Gmail search query (gmail_api mode)", "type": "text", "required": False},
+            {"key": "gmail_label_ids", "label": "Gmail label IDs, comma-separated", "type": "text", "required": False},
+            {"key": "max_results", "label": "Max results when querying", "type": "text", "required": False},
         ],
     },
     {
@@ -177,20 +188,13 @@ PIPELINE_STEPS: list[dict[str, Any]] = [
 STEP_BY_ID = {step["id"]: step for step in PIPELINE_STEPS}
 
 
-@dataclass
-class RunState:
-    run_id: str
-    created_at: datetime
-    current_index: int = 0
-    outputs: list[dict[str, Any]] = field(default_factory=list)
-    context: dict[str, Any] = field(default_factory=dict)
-
-
-RUNS: dict[str, RunState] = {}
-
-
 class StepExecutionRequest(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.on_event("startup")
+def startup() -> None:
+    storage.init_schema()
 
 
 def now_iso() -> str:
@@ -232,11 +236,76 @@ def parse_article_url(text: str) -> str | None:
     return url
 
 
-def execute_step(run: RunState, step_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
-    context = run.context
+def parse_label_ids(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
+
+def run_to_response(run: PipelineRunRecord) -> dict[str, Any]:
+    next_step = PIPELINE_STEPS[run.current_index]["id"] if run.current_index < len(PIPELINE_STEPS) else None
+    return {
+        "run_id": run.run_id,
+        "created_at": run.created_at.isoformat(),
+        "current_index": run.current_index,
+        "next_step": next_step,
+        "outputs": run.outputs,
+        "completed": run.current_index >= len(PIPELINE_STEPS),
+    }
+
+
+def get_run_or_404(run_id: str) -> PipelineRunRecord:
+    run = storage.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
+
+
+def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
     if step_id == "gmail_intake":
-        text = f"{inputs.get('subject', '')}\n{inputs.get('body', '')}".lower()
+        mode = (inputs.get("mode") or "manual").strip().lower()
+        if mode not in {"manual", "gmail_api"}:
+            raise HTTPException(status_code=400, detail="mode must be 'manual' or 'gmail_api'")
+
+        sender = ""
+        subject = ""
+        body = ""
+        gmail_message_id = None
+        gmail_thread_id = None
+        source = mode
+
+        if mode == "gmail_api":
+            max_results_raw = (inputs.get("max_results") or "1").strip()
+            try:
+                max_results = int(max_results_raw)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="max_results must be an integer") from exc
+
+            label_ids = parse_label_ids(inputs.get("gmail_label_ids", ""))
+            try:
+                fetched = gmail_client.fetch_intake_message(
+                    message_id=(inputs.get("gmail_message_id") or "").strip() or None,
+                    query=(inputs.get("gmail_query") or "").strip() or None,
+                    label_ids=label_ids,
+                    max_results=max_results,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            sender = fetched.get("sender", "")
+            subject = fetched.get("subject", "")
+            body = fetched.get("body", "")
+            gmail_message_id = fetched.get("gmail_message_id")
+            gmail_thread_id = fetched.get("gmail_thread_id")
+        else:
+            sender = (inputs.get("sender") or "").strip()
+            subject = (inputs.get("subject") or "").strip()
+            body = (inputs.get("body") or "").strip()
+            if not sender or not subject or not body:
+                raise HTTPException(
+                    status_code=400,
+                    detail="manual mode requires sender, subject, and body",
+                )
+
+        text = f"{subject}\n{body}".lower()
         keywords = [
             "correction",
             "error",
@@ -249,16 +318,19 @@ def execute_step(run: RunState, step_id: str, inputs: dict[str, Any]) -> dict[st
             "editor's note",
             "retract",
         ]
-        matched = [k for k in keywords if k in text]
+        matched = [keyword for keyword in keywords if keyword in text]
         case_id = f"case-{uuid4().hex[:8]}"
         output = {
             "case_id": case_id,
+            "source": source,
             "is_candidate": bool(matched),
             "matched_keywords": matched,
             "labels_applied": ["auto/correction-candidate", "auto/processed"],
-            "sender": inputs["sender"],
-            "subject": inputs["subject"],
-            "body": inputs["body"],
+            "gmail_message_id": gmail_message_id,
+            "gmail_thread_id": gmail_thread_id,
+            "sender": sender,
+            "subject": subject,
+            "body": body,
         }
         context.update(output)
         return output
@@ -411,7 +483,11 @@ def execute_step(run: RunState, step_id: str, inputs: dict[str, Any]) -> dict[st
     raise HTTPException(status_code=404, detail=f"Unknown step: {step_id}")
 
 
-def validate_required_inputs(run: RunState, step: dict[str, Any], inputs: dict[str, Any]) -> None:
+def validate_required_inputs(run: PipelineRunRecord, step: dict[str, Any], inputs: dict[str, Any]) -> None:
+    # gmail_intake has conditional required fields, validated in execute_step.
+    if step["id"] == "gmail_intake":
+        return
+
     missing: list[str] = []
     for field_def in step["inputs"]:
         if not field_def.get("required"):
@@ -528,46 +604,27 @@ async def api_steps(request: Request) -> JSONResponse:
 async def api_create_run(request: Request) -> JSONResponse:
     ensure_admin(request)
     run_id = uuid4().hex
-    run = RunState(run_id=run_id, created_at=datetime.now(timezone.utc))
-    RUNS[run_id] = run
+    created_by = request.session.get("username")
+
+    storage.create_run(run_id, created_by)
     append_run_log(run_id, "system", "Run created", {"current_step": PIPELINE_STEPS[0]["id"]})
-    return JSONResponse(
-        {
-            "run_id": run_id,
-            "created_at": run.created_at.isoformat(),
-            "current_index": run.current_index,
-            "next_step": PIPELINE_STEPS[run.current_index]["id"],
-            "outputs": run.outputs,
-        }
-    )
+
+    run = get_run_or_404(run_id)
+    response = run_to_response(run)
+    return JSONResponse(response)
 
 
 @app.get("/api/pipeline/runs/{run_id}")
 async def api_get_run(run_id: str, request: Request) -> JSONResponse:
     ensure_admin(request)
-    run = RUNS.get(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    next_step = PIPELINE_STEPS[run.current_index]["id"] if run.current_index < len(PIPELINE_STEPS) else None
-    return JSONResponse(
-        {
-            "run_id": run.run_id,
-            "created_at": run.created_at.isoformat(),
-            "current_index": run.current_index,
-            "next_step": next_step,
-            "outputs": run.outputs,
-            "completed": run.current_index >= len(PIPELINE_STEPS),
-        }
-    )
+    run = get_run_or_404(run_id)
+    return JSONResponse(run_to_response(run))
 
 
 @app.post("/api/pipeline/runs/{run_id}/steps/{step_id}")
 async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest, request: Request) -> JSONResponse:
     ensure_admin(request)
-    run = RUNS.get(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+    run = get_run_or_404(run_id)
 
     if run.current_index >= len(PIPELINE_STEPS):
         raise HTTPException(status_code=400, detail="Run is already complete")
@@ -583,38 +640,48 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
     validate_required_inputs(run, step, payload.inputs)
 
     append_run_log(run_id, step_id, "Step started", {"inputs": payload.inputs})
-    output = execute_step(run, step_id, payload.inputs)
+
+    context = dict(run.context)
+    output = execute_step(context, step_id, payload.inputs)
     append_run_log(run_id, step_id, "Step completed", {"output": output})
 
-    run.outputs.append(
-        {
-            "step_id": step_id,
-            "step_label": step["label"],
-            "timestamp": now_iso(),
-            "inputs": payload.inputs,
-            "output": output,
-        }
-    )
-    run.current_index += 1
+    if step_id == "gmail_intake":
+        storage.save_gmail_intake_event(
+            run_id=run_id,
+            case_id=output["case_id"],
+            source=output["source"],
+            gmail_message_id=output.get("gmail_message_id"),
+            gmail_thread_id=output.get("gmail_thread_id"),
+            sender=output.get("sender", ""),
+            subject=output.get("subject", ""),
+            body=output.get("body", ""),
+            matched_keywords=output.get("matched_keywords", []),
+            is_candidate=bool(output.get("is_candidate")),
+        )
 
-    next_step = PIPELINE_STEPS[run.current_index]["id"] if run.current_index < len(PIPELINE_STEPS) else None
-    return JSONResponse(
-        {
-            "run_id": run.run_id,
-            "current_index": run.current_index,
-            "next_step": next_step,
-            "completed": run.current_index >= len(PIPELINE_STEPS),
-            "last_output": run.outputs[-1],
-            "outputs": run.outputs,
-        }
+    step_index = run.current_index
+    storage.append_step_output(
+        run_id,
+        step_index=step_index,
+        step_id=step_id,
+        step_label=step["label"],
+        inputs=payload.inputs,
+        output=output,
+        context=context,
+        current_index=step_index + 1,
     )
+
+    updated = get_run_or_404(run_id)
+    response = run_to_response(updated)
+    response["last_output"] = updated.outputs[-1] if updated.outputs else None
+    return JSONResponse(response)
 
 
 @app.get("/api/pipeline/runs/{run_id}/logs")
 async def api_run_logs(run_id: str, request: Request, lines: int = 200) -> JSONResponse:
     ensure_admin(request)
-    run = RUNS.get(run_id)
-    if not run:
+
+    if not storage.run_exists(run_id):
         raise HTTPException(status_code=404, detail="Run not found")
 
     log_file = RUN_LOG_DIR / f"{run_id}.log"
