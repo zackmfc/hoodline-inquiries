@@ -249,14 +249,14 @@ Start date: **Thursday, April 16, 2026**
 
 Assumption for estimates below: Claude Code runs in auto mode with repo access, Docker running, and required credentials/secrets already provisioned. Estimates are active build time.
 
-Progress update as of **Thursday, April 16, 2026**: `foundation`, `3.1 gmail intake`, and `3.2 classifier` are complete.
+Progress update as of **Thursday, April 16, 2026**: `foundation`, `3.1 gmail intake`, `3.2 classifier`, and `3.3 article resolver` are complete.
 
 | System step | Status | Dates | Claude Code auto-mode estimate |
 |---|---|---|---|
 | Foundation: Docker + Postgres + migrations + service skeleton | Complete | Apr 16, 2026 | 1.0-2.0 hours |
 | 3.1 Gmail intake | Complete | Apr 16, 2026 | 1.0-2.0 hours |
 | 3.2 Classifier | Complete | Apr 16, 2026 | 0.25-0.75 hours |
-| 3.3 Article resolver | Next | Apr 16–Apr 17, 2026 | 1.0-2.0 hours |
+| 3.3 Article resolver | Complete | Apr 16, 2026 | 1.0-2.0 hours |
 | 3.4 Article fetcher (Playwright + CMS auth/session handling) | Pending | Apr 17, 2026 | 2.0-4.0 hours |
 | 3.5 Verification agent (links + web grounding + confidence) | Pending | Apr 18–Apr 19, 2026 | 4.0-8.0 hours |
 | 3.6 Remediation classifier + note writer | Pending | Apr 20, 2026 | 0.5-1.5 hours |
@@ -264,9 +264,9 @@ Progress update as of **Thursday, April 16, 2026**: `foundation`, `3.1 gmail int
 | 3.8 Review dashboard | Pending | Apr 22, 2026 | 2.0-4.0 hours |
 | End-to-end integration, smoke tests, docs, runbooks | Pending | Apr 23, 2026 | 1.0-2.0 hours |
 
-Estimated completed active build time: **2.25-4.75 hours**.
-Estimated remaining active build time: **12.5-25.5 hours**.
+Estimated completed active build time: **3.25-6.75 hours**.
+Estimated remaining active build time: **11.5-23.5 hours**.
 Estimated total active build time (revised): **14.75-30.25 hours**.
-Updated projected completion window: **around April 23, 2026**.
+Updated projected completion window: **around April 22-23, 2026**.
 
 Execution expectation per step: run in Docker, validate, commit, and `git push` before moving to the next step.

@@ -18,6 +18,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.classifier import MessageClassifier
 from app.gmail_client import GmailClient
+from app.resolver import ArticleResolver, ResolverConfig
 from app.storage import PipelineRunRecord, Storage
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -47,6 +48,16 @@ database_url = os.getenv("DATABASE_URL", "postgresql://hoodline:hoodline@postgre
 storage = Storage(database_url)
 gmail_client = GmailClient()
 message_classifier = MessageClassifier()
+resolver_min_similarity = float(os.getenv("RESOLVER_MIN_SIMILARITY", "0.65"))
+resolver_max_candidates = int(os.getenv("RESOLVER_MAX_CANDIDATES", "250"))
+article_resolver = ArticleResolver(
+    storage=storage,
+    cms_base_url=cms_base_url,
+    config=ResolverConfig(
+        min_similarity=resolver_min_similarity,
+        max_candidates=resolver_max_candidates,
+    ),
+)
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -91,9 +102,11 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
         "id": "resolver",
         "title": "3.3 Article resolver",
         "start": "2026-04-16",
-        "end": "2026-04-17",
+        "end": "2026-04-16",
         "min": 1.0,
         "max": 2.0,
+        "completed": True,
+        "completed_at": "2026-04-16",
     },
     {
         "id": "fetcher",
@@ -175,9 +188,15 @@ PIPELINE_STEPS: list[dict[str, Any]] = [
     {
         "id": "resolver",
         "label": "3.3 Article resolver",
-        "description": "Resolve article URL and CMS edit URL from provided hints.",
+        "description": "Resolve article URL from direct link or cached editorial posts (with optional seed input).",
         "inputs": [
             {"key": "article_hint", "label": "Article hint or URL", "type": "text", "required": True},
+            {"key": "seed_title", "label": "Seed editorial title (optional)", "type": "text", "required": False},
+            {"key": "seed_article_url", "label": "Seed editorial article URL (optional)", "type": "text", "required": False},
+            {"key": "seed_cms_edit_url", "label": "Seed editorial CMS edit URL (optional)", "type": "text", "required": False},
+            {"key": "seed_content", "label": "Seed editorial message content (optional)", "type": "textarea", "required": False},
+            {"key": "seed_channel", "label": "Seed editorial channel (optional)", "type": "text", "required": False},
+            {"key": "seed_message_id", "label": "Seed editorial message ID (optional)", "type": "text", "required": False},
         ],
     },
     {
@@ -395,18 +414,22 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
 
     if step_id == "resolver":
         hint = inputs.get("article_hint") or context.get("referenced_article_hint") or ""
-        article_url = parse_article_url(hint)
-        if not article_url:
-            slug = "-".join(re.findall(r"[a-z0-9]+", hint.lower())[:8]) or "resolved-article"
-            article_url = f"https://hoodline.com/{slug}/"
-
-        edit_id = abs(hash(article_url)) % 100000
-        output = {
-            "article_url": article_url,
-            "article_cms_id": edit_id,
-            "article_edit_url": f"{cms_base_url.rstrip('/')}/wp-admin/post.php?post={edit_id}&action=edit",
-            "resolver_confidence": 0.86,
+        seed_payload = {
+            "title": inputs.get("seed_title"),
+            "article_url": inputs.get("seed_article_url"),
+            "cms_edit_url": inputs.get("seed_cms_edit_url"),
+            "content": inputs.get("seed_content"),
+            "channel": inputs.get("seed_channel"),
+            "message_id": inputs.get("seed_message_id"),
         }
+        try:
+            output = article_resolver.resolve(
+                article_hint=hint,
+                classifier_hint=context.get("referenced_article_hint"),
+                seed_editorial_post=seed_payload,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         context.update(output)
         return output
 
@@ -707,6 +730,16 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
             sender=output.get("sender", ""),
             subject=output.get("subject", ""),
             body=output.get("body", ""),
+            output=output,
+        )
+    if step_id == "resolver":
+        storage.save_resolver_event(
+            run_id=run_id,
+            case_id=context.get("case_id"),
+            article_hint=payload.inputs.get("article_hint", ""),
+            strategy=output.get("resolver_strategy", "unknown"),
+            confidence=output.get("resolver_confidence"),
+            needs_human=bool(output.get("needs_human")),
             output=output,
         )
 

@@ -94,6 +94,39 @@ class Storage:
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS editorial_posts (
+                        id BIGSERIAL PRIMARY KEY,
+                        source TEXT NOT NULL DEFAULT 'discord',
+                        channel TEXT,
+                        message_id TEXT,
+                        title TEXT NOT NULL,
+                        article_url TEXT NOT NULL,
+                        cms_edit_url TEXT,
+                        content TEXT,
+                        posted_at TIMESTAMPTZ,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (source, message_id)
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS resolver_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id TEXT REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+                        case_id TEXT,
+                        article_hint TEXT,
+                        strategy TEXT NOT NULL,
+                        confidence DOUBLE PRECISION,
+                        needs_human BOOLEAN NOT NULL DEFAULT FALSE,
+                        output_json JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
 
     def create_run(self, run_id: str, created_by: str | None) -> None:
         with self.connect() as conn:
@@ -275,6 +308,112 @@ class Storage:
                         sender,
                         subject,
                         body,
+                        Jsonb(output),
+                    ),
+                )
+
+    def upsert_editorial_post(
+        self,
+        *,
+        source: str,
+        channel: str | None,
+        message_id: str | None,
+        title: str,
+        article_url: str,
+        cms_edit_url: str | None,
+        content: str | None,
+        posted_at: datetime | None,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                if message_id:
+                    cur.execute(
+                        """
+                        INSERT INTO editorial_posts (
+                            source, channel, message_id, title, article_url, cms_edit_url, content, posted_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (source, message_id)
+                        DO UPDATE SET
+                            channel = EXCLUDED.channel,
+                            title = EXCLUDED.title,
+                            article_url = EXCLUDED.article_url,
+                            cms_edit_url = EXCLUDED.cms_edit_url,
+                            content = EXCLUDED.content,
+                            posted_at = EXCLUDED.posted_at,
+                            updated_at = NOW()
+                        RETURNING id, source, channel, message_id, title, article_url, cms_edit_url, content, posted_at, created_at, updated_at
+                        """,
+                        (source, channel, message_id, title, article_url, cms_edit_url, content, posted_at),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO editorial_posts (
+                            source, channel, message_id, title, article_url, cms_edit_url, content, posted_at
+                        )
+                        VALUES (%s, %s, NULL, %s, %s, %s, %s, %s)
+                        RETURNING id, source, channel, message_id, title, article_url, cms_edit_url, content, posted_at, created_at, updated_at
+                        """,
+                        (source, channel, title, article_url, cms_edit_url, content, posted_at),
+                    )
+                row = cur.fetchone()
+
+        if row is None:
+            raise RuntimeError("Failed to upsert editorial post")
+
+        return dict(row)
+
+    def list_editorial_posts(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(limit, 1000))
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, source, channel, message_id, title, article_url, cms_edit_url, content, posted_at, created_at, updated_at
+                    FROM editorial_posts
+                    ORDER BY COALESCE(posted_at, created_at) DESC
+                    LIMIT %s
+                    """,
+                    (bounded_limit,),
+                )
+                rows = cur.fetchall()
+
+        return [dict(row) for row in rows]
+
+    def save_resolver_event(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        article_hint: str,
+        strategy: str,
+        confidence: float | None,
+        needs_human: bool,
+        output: dict[str, Any],
+    ) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO resolver_events (
+                        run_id,
+                        case_id,
+                        article_hint,
+                        strategy,
+                        confidence,
+                        needs_human,
+                        output_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run_id,
+                        case_id,
+                        article_hint,
+                        strategy,
+                        confidence,
+                        needs_human,
                         Jsonb(output),
                     ),
                 )
