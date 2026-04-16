@@ -170,6 +170,22 @@ class Storage:
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS stager_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id TEXT REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+                        case_id TEXT,
+                        article_cms_id INTEGER,
+                        target_field TEXT NOT NULL,
+                        remote_applied BOOLEAN NOT NULL DEFAULT FALSE,
+                        remote_status TEXT NOT NULL,
+                        preview_url TEXT,
+                        output_json JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
 
     def create_run(self, run_id: str, created_by: str | None) -> None:
         with self.connect() as conn:
@@ -635,6 +651,46 @@ class Storage:
                         note_text,
                         backend,
                         model,
+                        Jsonb(output),
+                    ),
+                )
+
+    def save_stager_event(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        article_cms_id: int | None,
+        target_field: str,
+        remote_applied: bool,
+        remote_status: str,
+        preview_url: str,
+        output: dict[str, Any],
+    ) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO stager_events (
+                        run_id,
+                        case_id,
+                        article_cms_id,
+                        target_field,
+                        remote_applied,
+                        remote_status,
+                        preview_url,
+                        output_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run_id,
+                        case_id,
+                        article_cms_id,
+                        target_field,
+                        remote_applied,
+                        remote_status,
+                        preview_url,
                         Jsonb(output),
                     ),
                 )

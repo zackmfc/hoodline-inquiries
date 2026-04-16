@@ -22,6 +22,7 @@ from app.fetcher import ArticleFetcher
 from app.gmail_client import GmailClient
 from app.remediation import RemediationEngine
 from app.resolver import ArticleResolver, ResolverConfig
+from app.stager import DraftStager
 from app.storage import PipelineRunRecord, Storage
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -63,6 +64,7 @@ article_resolver = ArticleResolver(
 )
 article_fetcher = ArticleFetcher()
 remediation_engine = RemediationEngine()
+draft_stager = DraftStager(cms_base_url=cms_base_url)
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -147,24 +149,26 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
     {
         "id": "stager",
         "title": "3.7 Draft stager",
-        "start": "2026-04-17",
-        "end": "2026-04-17",
-        "min": 1.5,
-        "max": 3.0,
+        "start": "2026-04-16",
+        "end": "2026-04-16",
+        "min": 0.6,
+        "max": 1.2,
+        "completed": True,
+        "completed_at": "2026-04-16",
     },
     {
         "id": "review_dashboard",
         "title": "3.8 Review dashboard",
         "start": "2026-04-18",
-        "end": "2026-04-18",
+        "end": "2026-04-19",
         "min": 1.5,
         "max": 3.0,
     },
     {
         "id": "integration",
         "title": "End-to-end integration, smoke tests, docs, runbooks",
-        "start": "2026-04-18",
-        "end": "2026-04-18",
+        "start": "2026-04-19",
+        "end": "2026-04-19",
         "min": 0.75,
         "max": 1.5,
     },
@@ -596,16 +600,45 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
         return output
 
     if step_id == "stager":
-        target_field = inputs.get("target_field")
-        new_value = inputs.get("new_value")
-        preview_id = uuid4().hex[:10]
-        output = {
-            "staged": True,
-            "target_field": target_field,
-            "new_value": new_value,
-            "preview_url": f"{cms_base_url.rstrip('/')}/?preview={preview_id}",
-            "diff_summary": f"Updated {target_field} with proposed correction text.",
-        }
+        target_field = str(inputs.get("target_field") or "").strip().lower()
+        new_value = str(inputs.get("new_value") or "").strip()
+        if not target_field:
+            raise HTTPException(status_code=400, detail="target_field is required")
+        if not new_value:
+            raise HTTPException(status_code=400, detail="new_value is required")
+
+        recommended_edit = context.get("recommended_edit") or {}
+        current_value = ""
+        if isinstance(recommended_edit, dict) and target_field == str(recommended_edit.get("field", "")).strip().lower():
+            current_value = str(recommended_edit.get("old_value") or "").strip()
+        elif target_field == "title":
+            current_value = str(context.get("headline") or "").strip()
+        elif target_field in {"body", "meta_description"}:
+            current_value = str(context.get("meta_description") or "").strip()
+
+        article_cms_id = context.get("article_cms_id")
+        if article_cms_id is not None:
+            try:
+                article_cms_id = int(article_cms_id)
+            except (TypeError, ValueError):
+                article_cms_id = None
+
+        try:
+            output = draft_stager.stage(
+                article_cms_id=article_cms_id,
+                article_url=str(context.get("article_url") or ""),
+                article_edit_url=str(context.get("article_edit_url") or "").strip() or None,
+                target_field=target_field,
+                new_value=new_value,
+                current_value=current_value,
+                suggested_note_text=str(context.get("suggested_note_text") or "").strip() or None,
+                selected_action=str(context.get("selected_action") or "").strip() or None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Stager failed: {exc}") from exc
+
         context.update(output)
         return output
 
@@ -986,6 +1019,23 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
             note_text=output.get("suggested_note_text", ""),
             backend=output.get("note_writer_backend", "unknown"),
             model=output.get("note_writer_model"),
+            output=output,
+        )
+    if step_id == "stager":
+        article_cms_id = context.get("article_cms_id")
+        if article_cms_id is not None:
+            try:
+                article_cms_id = int(article_cms_id)
+            except (TypeError, ValueError):
+                article_cms_id = None
+        storage.save_stager_event(
+            run_id=run_id,
+            case_id=context.get("case_id"),
+            article_cms_id=article_cms_id,
+            target_field=output.get("target_field", ""),
+            remote_applied=bool(output.get("remote_applied")),
+            remote_status=output.get("remote_status", "unknown"),
+            preview_url=output.get("preview_url", ""),
             output=output,
         )
 
