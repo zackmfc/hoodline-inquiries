@@ -173,10 +173,12 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
     {
         "id": "integration",
         "title": "End-to-end integration, smoke tests, docs, runbooks",
-        "start": "2026-04-19",
-        "end": "2026-04-19",
-        "min": 0.75,
-        "max": 1.5,
+        "start": "2026-04-16",
+        "end": "2026-04-16",
+        "min": 0.08,
+        "max": 0.08,
+        "completed": True,
+        "completed_at": "2026-04-16",
     },
 ]
 
@@ -729,6 +731,77 @@ async def review_page(request: Request) -> HTMLResponse:
         "review.html",
         render_context(request),
     )
+
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request) -> HTMLResponse:
+    user = page_user_or_redirect(request, "/setup")
+    if isinstance(user, RedirectResponse):
+        return user
+    if user["role"] not in ADMIN_ROLES:
+        return RedirectResponse(url="/", status_code=302)
+
+    checks = _run_setup_checks()
+    return templates.TemplateResponse(
+        "setup.html",
+        render_context(request, checks=checks),
+    )
+
+
+def _run_setup_checks() -> list[dict[str, Any]]:
+    """Run live checks against each external dependency and return status."""
+    checks: list[dict[str, Any]] = []
+
+    # 1. Database
+    try:
+        with storage.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) AS n FROM pipeline_runs")
+                row = cur.fetchone()
+                run_count = row["n"] if row else 0
+        checks.append({"id": "database", "ok": True, "detail": f"Connected. {run_count} pipeline run(s) in database."})
+    except Exception as exc:
+        checks.append({"id": "database", "ok": False, "detail": f"Connection failed: {exc}"})
+
+    # 2. Anthropic API key
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if api_key:
+        checks.append({"id": "anthropic_api", "ok": True, "detail": f"Key configured (ends ...{api_key[-4:]}). Classifier, verification, and remediation will use Claude."})
+    else:
+        checks.append({"id": "anthropic_api", "ok": False, "detail": "Not configured. Pipeline will use rules-based fallback for classification, verification, and remediation."})
+
+    # 3. Gmail
+    if gmail_client.configured:
+        checks.append({"id": "gmail", "ok": True, "detail": f"Configured for {gmail_client.delegated_user}."})
+    else:
+        checks.append({"id": "gmail", "ok": False, "detail": "Not configured. Gmail API mode won't work; manual email input still works."})
+
+    # 4. CMS stager credentials
+    cms_user = os.getenv("CMS_STAGER_USERNAME", "")
+    cms_pass = os.getenv("CMS_STAGER_APP_PASSWORD", "")
+    remote_writes = os.getenv("STAGER_ENABLE_REMOTE_WRITES", "false").strip().lower() == "true"
+    if cms_user and cms_pass and remote_writes:
+        checks.append({"id": "cms_stager", "ok": True, "detail": f"CMS writes enabled for user '{cms_user}'."})
+    elif cms_user and cms_pass:
+        checks.append({"id": "cms_stager", "ok": True, "detail": f"Credentials set for '{cms_user}', but STAGER_ENABLE_REMOTE_WRITES=false (dry-run mode)."})
+    else:
+        checks.append({"id": "cms_stager", "ok": False, "detail": "No CMS credentials. Stager runs in dry-run mode only."})
+
+    # 5. CMS fetcher cookie
+    cms_cookie = os.getenv("CMS_FETCHER_SESSION_COOKIE", "")
+    if cms_cookie:
+        checks.append({"id": "cms_fetcher", "ok": True, "detail": "Session cookie configured for CMS edit URL probing."})
+    else:
+        checks.append({"id": "cms_fetcher", "ok": False, "detail": "No session cookie. CMS edit URL probing will show auth_required."})
+
+    # 6. Session secret
+    secret = os.getenv("APP_SESSION_SECRET", "")
+    if secret and secret not in {"dev-only-secret-change-me", "change-this-session-secret"}:
+        checks.append({"id": "session_secret", "ok": True, "detail": "Custom session secret configured."})
+    else:
+        checks.append({"id": "session_secret", "ok": False, "detail": "Using default dev session secret. Set APP_SESSION_SECRET for production."})
+
+    return checks
 
 
 @app.get("/login", response_class=HTMLResponse)

@@ -265,11 +265,11 @@ Timing note: commit/log timestamps show `3.3` ran from about **12:33 PM to 12:40
 | 3.6 Remediation classifier + note writer | Complete | Apr 16, 2026 | 0.4-0.8 hours |
 | 3.7 Draft stager (CMS draft write, no publish) | Complete | Apr 16, 2026 | 0.6-1.2 hours |
 | 3.8 Review dashboard | Complete | Apr 16, 2026 | ~0.17 hours (10 min actual) |
-| End-to-end integration, smoke tests, docs, runbooks | Pending | Apr 19, 2026 | 0.75-1.5 hours |
+| End-to-end integration, smoke tests, docs, runbooks | Complete | Apr 16, 2026 | ~0.08 hours (5 min actual) |
 
-Estimated completed active build time: **~3.1-5.3 hours** (9 of 10 steps done).
-Estimated remaining active build time: **0.75-1.5 hours** (integration only).
-Estimated total active build time (revised): **3.85-6.8 hours**.
-Updated projected completion window: **April 16, 2026** (only integration remains).
+**All 10 steps complete** as of April 16, 2026.
+Actual total active build time: approximately **3.2-5.4 hours** (all completed same day).
+Original estimate was 8-15.5 hours over April 16-19. Completed in a single day.
+Integration step included full end-to-end smoke test and admin setup guide page.
 
 Execution expectation per step: run in Docker, validate, commit, and `git push` before moving to the next step.

@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% block title %}Setup Guide | Hoodline{% endblock %}
+{% block content %}
+<section class="panel hero">
+  <h1>Setup Guide</h1>
+  <p>Administrative steps to get the Hoodline Correction Pipeline fully operational. Each section shows the current status based on live environment checks.</p>
+</section>
+
+<section class="panel">
+  <h2>Live Status Checks</h2>
+  <div class="checks-grid">
+    {% for check in checks %}
+    <div class="check-row {{ 'check-ok' if check.ok else 'check-warn' }}">
+      <span class="check-icon">{{ '&check;' if check.ok else '!' }}</span>
+      <div>
+        <strong>{{ check.id | replace('_', ' ') | title }}</strong>
+        <p class="muted">{{ check.detail }}</p>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 1: Docker &amp; Database</h2>
+  <p class="muted">Status: <span class="status-done">Already done</span> if you're seeing this page.</p>
+  <div class="setup-step">
+    <h3>1a. Clone and start</h3>
+    <pre class="code-block">git clone &lt;repo-url&gt; hoodline-corrections
+cd hoodline-corrections
+cp .env.example .env
+# Edit .env with your values (see below)
+docker compose up -d</pre>
+    <p>The app auto-creates all database tables on first startup. No manual migrations needed.</p>
+
+    <h3>1b. Default superuser</h3>
+    <p>On first boot, a superuser is created from these env vars:</p>
+    <pre class="code-block">DEFAULT_SUPERUSER_USERNAME=zack@impress3.com
+DEFAULT_SUPERUSER_PASSWORD=billGAtes1!1</pre>
+    <p>Change the password immediately after first login via the <a href="/users">Users</a> page. To change the superuser entirely, update both env vars and restart.</p>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 2: Anthropic API Key</h2>
+  <p class="muted">Required for: Claude-powered classification (3.2), verification (3.5), and remediation (3.6).</p>
+  <div class="setup-step">
+    <p>Without this key, all three steps fall back to rules-based heuristics. The pipeline still works, but with less accuracy.</p>
+    <h3>How to set up</h3>
+    <ol>
+      <li>Go to <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com/settings/keys</a></li>
+      <li>Create a new API key</li>
+      <li>Add to your <code>.env</code> or <code>docker-compose.yml</code>:</li>
+    </ol>
+    <pre class="code-block">ANTHROPIC_API_KEY=sk-ant-api03-...your-key...</pre>
+    <p>Restart the container after setting:</p>
+    <pre class="code-block">docker compose up -d</pre>
+    <h3>Model selection</h3>
+    <p>Each component can use a different model. Defaults are sensible for cost/quality:</p>
+    <table class="setup-table">
+      <thead><tr><th>Component</th><th>Env Var</th><th>Default</th><th>Recommendation</th></tr></thead>
+      <tbody>
+        <tr><td>Classifier</td><td><code>CLASSIFIER_MODEL</code></td><td>claude-3-5-sonnet-latest</td><td>Sonnet is sufficient</td></tr>
+        <tr><td>Verification</td><td><code>VERIFICATION_MODEL</code></td><td>claude-sonnet-4-20250514</td><td>Sonnet 4 for best accuracy</td></tr>
+        <tr><td>Remediation</td><td><code>REMEDIATION_MODEL</code></td><td>claude-3-5-sonnet-latest</td><td>Sonnet is sufficient</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 3: Gmail API Integration</h2>
+  <p class="muted">Required for: Automatic email intake from contact@hoodline.com (step 3.1 in gmail_api mode).</p>
+  <div class="setup-step">
+    <p>Without this, you can still use <strong>manual mode</strong> in the Pipeline Tester to paste emails by hand.</p>
+    <h3>How to set up</h3>
+    <ol>
+      <li>Create a <strong>Google Cloud project</strong> (or use an existing one)</li>
+      <li>Enable the <strong>Gmail API</strong> in the project</li>
+      <li>Create a <strong>Service Account</strong>:
+        <ul>
+          <li>IAM &amp; Admin &rarr; Service Accounts &rarr; Create</li>
+          <li>Download the JSON key file</li>
+        </ul>
+      </li>
+      <li>Set up <strong>domain-wide delegation</strong>:
+        <ul>
+          <li>In Google Workspace Admin &rarr; Security &rarr; API controls &rarr; Domain-wide delegation</li>
+          <li>Add the service account's client ID</li>
+          <li>Scope: <code>https://www.googleapis.com/auth/gmail.readonly</code></li>
+        </ul>
+      </li>
+      <li>Create a <strong>Gmail filter</strong> on contact@hoodline.com:
+        <ul>
+          <li>Match keywords: <code>correction, error, mistake, inaccurate, wrong, incorrect, typo, update, editor's note, retract</code></li>
+          <li>Apply label: <code>auto/correction-candidate</code></li>
+        </ul>
+      </li>
+      <li>Set env vars:</li>
+    </ol>
+    <pre class="code-block">GMAIL_DELEGATED_USER=contact@hoodline.com
+GMAIL_SERVICE_ACCOUNT_FILE=/run/secrets/gmail-service-account.json
+# OR inline:
+GMAIL_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
+GMAIL_DEFAULT_QUERY=label:auto/correction-candidate is:unread</pre>
+    <p>Mount the JSON key file into the container via Docker volume or secrets.</p>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 4: Hoodline CMS Access</h2>
+  <p class="muted">Required for: Article fetching from CMS (3.4) and draft staging (3.7).</p>
+  <div class="setup-step">
+    <h3>4a. Fetcher session cookie (optional)</h3>
+    <p>Allows the fetcher to probe CMS edit URLs. Without it, the fetcher only reads the public article page.</p>
+    <ol>
+      <li>Log into <a href="{{ cms_base_url }}" target="_blank" rel="noreferrer">{{ cms_base_url }}</a> as a bot/service account</li>
+      <li>Copy the session cookie from browser dev tools</li>
+      <li>Set: <code>CMS_FETCHER_SESSION_COOKIE=wordpress_logged_in_xxx=value</code></li>
+    </ol>
+    <p class="muted">This cookie will expire periodically. An automated refresh mechanism is planned but not yet built.</p>
+
+    <h3>4b. Draft stager credentials</h3>
+    <p>Enables the stager to write drafts to the CMS via WordPress REST API.</p>
+    <ol>
+      <li>In WordPress, create a dedicated <strong>Application Password</strong>:
+        <ul>
+          <li>Users &rarr; your bot account &rarr; Application Passwords</li>
+          <li>Create new, copy the generated password</li>
+        </ul>
+      </li>
+      <li>Set env vars:</li>
+    </ol>
+    <pre class="code-block">CMS_STAGER_USERNAME=hoodline-bot
+CMS_STAGER_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
+STAGER_ENABLE_REMOTE_WRITES=true
+STAGER_MODE=wp_rest</pre>
+    <p><strong>Safety:</strong> Leave <code>STAGER_ENABLE_REMOTE_WRITES=false</code> until you've tested the pipeline end-to-end in dry-run mode. The stager never publishes, only creates/updates drafts.</p>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 5: Session Secret</h2>
+  <p class="muted">Required for: Production deployment security.</p>
+  <div class="setup-step">
+    <p>The dashboard uses signed session cookies. The default secret is insecure.</p>
+    <pre class="code-block"># Generate a strong secret:
+python3 -c "import secrets; print(secrets.token_hex(32))"
+
+# Set it:
+APP_SESSION_SECRET=your-generated-secret-here</pre>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 6: Create Editor Accounts</h2>
+  <p class="muted">Required for: Review dashboard access.</p>
+  <div class="setup-step">
+    <ol>
+      <li>Go to the <a href="/users">Users</a> page</li>
+      <li>Create accounts for Eddie and any other editors who need review access</li>
+      <li>Assign the <strong>admin</strong> role (gives access to Review Dashboard, Pipeline Tester, and Setup Guide)</li>
+      <li>Share credentials securely</li>
+    </ol>
+    <table class="setup-table">
+      <thead><tr><th>Role</th><th>Access</th></tr></thead>
+      <tbody>
+        <tr><td><code>superuser</code></td><td>Everything, including managing other superusers</td></tr>
+        <tr><td><code>admin</code></td><td>Review Dashboard, Pipeline Tester, Users (can only create/edit <code>user</code> role), Setup Guide</td></tr>
+        <tr><td><code>user</code></td><td>Home, Dev Schedule only</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 7: Test the Pipeline End-to-End</h2>
+  <p class="muted">Recommended before enabling live Gmail intake or CMS writes.</p>
+  <div class="setup-step">
+    <ol>
+      <li>Go to the <a href="/pipeline">Pipeline Tester</a></li>
+      <li>Click <strong>Start New Run</strong></li>
+      <li>Step 3.1 (Gmail intake): Use <strong>manual</strong> mode. Paste a sample correction email:
+        <ul>
+          <li>Sender: <code>reader@example.com</code></li>
+          <li>Subject: <code>Correction: wrong date in your article</code></li>
+          <li>Body: <code>Your article about X states Y, but it should be Z.</code></li>
+        </ul>
+      </li>
+      <li>Execute each step in order. Each step shows structured output and logs.</li>
+      <li>After step 3.7 (stager), the run appears in the <a href="/review">Review Dashboard</a></li>
+      <li>In the Review Dashboard, test each action (approve, reject, escalate, etc.)</li>
+      <li>Check the logs panel in Pipeline Tester to verify structured audit output</li>
+    </ol>
+    <p><strong>What "Approve &amp; Publish" does:</strong> Records the decision in the database with reviewer identity and timestamp. It does NOT publish to the CMS. External publishing is explicitly out of scope for v1.</p>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 8: Go Live</h2>
+  <p class="muted">Once all checks are green and you've tested end-to-end.</p>
+  <div class="setup-step">
+    <ol>
+      <li>Set <code>ANTHROPIC_API_KEY</code> for Claude-powered analysis</li>
+      <li>Configure Gmail API for automatic intake</li>
+      <li>Set CMS credentials and <code>STAGER_ENABLE_REMOTE_WRITES=true</code> for draft staging</li>
+      <li>Change <code>APP_SESSION_SECRET</code> to a strong random value</li>
+      <li>Change the default superuser password</li>
+      <li>Create editor accounts</li>
+      <li>Monitor the <a href="/schedule">Dev Schedule</a> and pipeline logs for issues</li>
+    </ol>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Environment Variable Reference</h2>
+  <div class="setup-step">
+    <table class="setup-table env-table">
+      <thead><tr><th>Variable</th><th>Required</th><th>Default</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>APP_SESSION_SECRET</code></td><td>Prod</td><td>dev secret</td><td>Signs session cookies</td></tr>
+        <tr><td><code>DATABASE_URL</code></td><td>Yes</td><td>local postgres</td><td>PostgreSQL connection string</td></tr>
+        <tr><td><code>CMS_BASE_URL</code></td><td>Yes</td><td>hoodline.impress3.com</td><td>WordPress CMS URL</td></tr>
+        <tr><td><code>DEFAULT_SUPERUSER_USERNAME</code></td><td>Yes</td><td>zack@impress3.com</td><td>Bootstrap superuser</td></tr>
+        <tr><td><code>DEFAULT_SUPERUSER_PASSWORD</code></td><td>Yes</td><td>(set in env)</td><td>Bootstrap superuser password</td></tr>
+        <tr><td><code>ANTHROPIC_API_KEY</code></td><td>No*</td><td>(empty)</td><td>Claude API key for LLM steps</td></tr>
+        <tr><td><code>GMAIL_DELEGATED_USER</code></td><td>No*</td><td>(empty)</td><td>Gmail address to poll</td></tr>
+        <tr><td><code>GMAIL_SERVICE_ACCOUNT_FILE</code></td><td>No*</td><td>(empty)</td><td>Path to Google service account JSON</td></tr>
+        <tr><td><code>GMAIL_SERVICE_ACCOUNT_JSON</code></td><td>No*</td><td>(empty)</td><td>Inline service account JSON</td></tr>
+        <tr><td><code>CMS_STAGER_USERNAME</code></td><td>No*</td><td>(empty)</td><td>WordPress username for REST API</td></tr>
+        <tr><td><code>CMS_STAGER_APP_PASSWORD</code></td><td>No*</td><td>(empty)</td><td>WordPress application password</td></tr>
+        <tr><td><code>STAGER_ENABLE_REMOTE_WRITES</code></td><td>No</td><td>false</td><td>Enable actual CMS draft writes</td></tr>
+        <tr><td><code>CMS_FETCHER_SESSION_COOKIE</code></td><td>No</td><td>(empty)</td><td>CMS auth cookie for edit URL probing</td></tr>
+        <tr><td><code>CLASSIFIER_BACKEND</code></td><td>No</td><td>auto</td><td>auto | claude | rules</td></tr>
+        <tr><td><code>CLASSIFIER_MODEL</code></td><td>No</td><td>claude-3-5-sonnet-latest</td><td>Claude model for classifier</td></tr>
+        <tr><td><code>VERIFICATION_MODEL</code></td><td>No</td><td>claude-sonnet-4-20250514</td><td>Claude model for verification</td></tr>
+        <tr><td><code>REMEDIATION_BACKEND</code></td><td>No</td><td>auto</td><td>auto | claude | rules</td></tr>
+        <tr><td><code>REMEDIATION_MODEL</code></td><td>No</td><td>claude-3-5-sonnet-latest</td><td>Claude model for remediation</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">* Not required to start the pipeline, but needed for full functionality. Without these, the corresponding features use fallback modes or are unavailable.</p>
+  </div>
+</section>
+{% endblock %}
