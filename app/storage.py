@@ -154,6 +154,22 @@ class Storage:
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS remediation_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id TEXT REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+                        case_id TEXT,
+                        selected_action TEXT NOT NULL,
+                        error_category TEXT NOT NULL,
+                        note_text TEXT NOT NULL,
+                        backend TEXT NOT NULL,
+                        model TEXT,
+                        output_json JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
 
     def create_run(self, run_id: str, created_by: str | None) -> None:
         with self.connect() as conn:
@@ -579,6 +595,46 @@ class Storage:
                         article_edit_url,
                         fetch_status,
                         http_status,
+                        Jsonb(output),
+                    ),
+                )
+
+    def save_remediation_event(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        selected_action: str,
+        error_category: str,
+        note_text: str,
+        backend: str,
+        model: str | None,
+        output: dict[str, Any],
+    ) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO remediation_events (
+                        run_id,
+                        case_id,
+                        selected_action,
+                        error_category,
+                        note_text,
+                        backend,
+                        model,
+                        output_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run_id,
+                        case_id,
+                        selected_action,
+                        error_category,
+                        note_text,
+                        backend,
+                        model,
                         Jsonb(output),
                     ),
                 )

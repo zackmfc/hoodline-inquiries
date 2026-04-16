@@ -249,7 +249,7 @@ Start date: **Thursday, April 16, 2026**
 
 Assumption for estimates below: Claude Code runs in auto mode with repo access, Docker running, and required credentials/secrets already provisioned. Estimates are active build time.
 
-Progress update as of **Thursday, April 16, 2026**: `foundation`, `3.1 gmail intake`, `3.2 classifier`, `3.3 article resolver`, and `3.4 article fetcher` are complete.
+Progress update as of **Thursday, April 16, 2026**: `foundation`, `3.1 gmail intake`, `3.2 classifier`, `3.3 article resolver`, `3.4 article fetcher`, and `3.6 remediation classifier + note writer` are complete.
 Timing note: commit/log timestamps show `3.3` ran from about **12:33 PM to 12:40 PM PT** on April 16, 2026 (about **7 minutes** active build window), so estimates were tightened.
 
 | System step | Status | Dates | Claude Code auto-mode estimate |
@@ -259,15 +259,15 @@ Timing note: commit/log timestamps show `3.3` ran from about **12:33 PM to 12:40
 | 3.2 Classifier | Complete | Apr 16, 2026 | 0.2-0.3 hours |
 | 3.3 Article resolver | Complete | Apr 16, 2026 | 0.1-0.2 hours |
 | 3.4 Article fetcher (Playwright + CMS auth/session handling) | Complete | Apr 16, 2026 | 0.5-1.0 hours |
-| 3.5 Verification agent (links + web grounding + confidence) | Next | Apr 17–Apr 18, 2026 | 3.0-6.0 hours |
-| 3.6 Remediation classifier + note writer | Pending | Apr 19, 2026 | 0.5-1.0 hours |
-| 3.7 Draft stager (CMS draft write, no publish) | Pending | Apr 19–Apr 20, 2026 | 1.5-3.0 hours |
-| 3.8 Review dashboard | Pending | Apr 20, 2026 | 1.5-3.0 hours |
-| End-to-end integration, smoke tests, docs, runbooks | Pending | Apr 20, 2026 | 0.75-1.5 hours |
+| 3.5 Verification agent (links + web grounding + confidence) | Next | Apr 17, 2026 | 3.0-6.0 hours |
+| 3.6 Remediation classifier + note writer | Complete | Apr 16, 2026 | 0.4-0.8 hours |
+| 3.7 Draft stager (CMS draft write, no publish) | Pending | Apr 17, 2026 | 1.5-3.0 hours |
+| 3.8 Review dashboard | Pending | Apr 18, 2026 | 1.5-3.0 hours |
+| End-to-end integration, smoke tests, docs, runbooks | Pending | Apr 18, 2026 | 0.75-1.5 hours |
 
-Estimated completed active build time: **1.8-3.0 hours**.
-Estimated remaining active build time: **7.25-14.5 hours**.
-Estimated total active build time (revised): **9.05-17.5 hours**.
-Updated projected completion window: **around April 20, 2026**.
+Estimated completed active build time: **2.2-3.8 hours**.
+Estimated remaining active build time: **6.75-13.5 hours**.
+Estimated total active build time (revised): **8.95-17.3 hours**.
+Updated projected completion window: **around April 18, 2026**.
 
 Execution expectation per step: run in Docker, validate, commit, and `git push` before moving to the next step.

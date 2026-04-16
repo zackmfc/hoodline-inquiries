@@ -20,6 +20,7 @@ from app.auth import hash_password, verify_password
 from app.classifier import MessageClassifier
 from app.fetcher import ArticleFetcher
 from app.gmail_client import GmailClient
+from app.remediation import RemediationEngine
 from app.resolver import ArticleResolver, ResolverConfig
 from app.storage import PipelineRunRecord, Storage
 
@@ -61,6 +62,7 @@ article_resolver = ArticleResolver(
     ),
 )
 article_fetcher = ArticleFetcher()
+remediation_engine = RemediationEngine()
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -135,32 +137,34 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
     {
         "id": "remediation",
         "title": "3.6 Remediation classifier + note writer",
-        "start": "2026-04-19",
-        "end": "2026-04-19",
-        "min": 0.5,
-        "max": 1.0,
+        "start": "2026-04-16",
+        "end": "2026-04-16",
+        "min": 0.4,
+        "max": 0.8,
+        "completed": True,
+        "completed_at": "2026-04-16",
     },
     {
         "id": "stager",
         "title": "3.7 Draft stager",
-        "start": "2026-04-19",
-        "end": "2026-04-20",
+        "start": "2026-04-17",
+        "end": "2026-04-17",
         "min": 1.5,
         "max": 3.0,
     },
     {
         "id": "review_dashboard",
         "title": "3.8 Review dashboard",
-        "start": "2026-04-20",
-        "end": "2026-04-20",
+        "start": "2026-04-18",
+        "end": "2026-04-18",
         "min": 1.5,
         "max": 3.0,
     },
     {
         "id": "integration",
         "title": "End-to-end integration, smoke tests, docs, runbooks",
-        "start": "2026-04-20",
-        "end": "2026-04-20",
+        "start": "2026-04-18",
+        "end": "2026-04-18",
         "min": 0.75,
         "max": 1.5,
     },
@@ -230,6 +234,9 @@ PIPELINE_STEPS: list[dict[str, Any]] = [
         "description": "Choose correction note type and draft neutral note text.",
         "inputs": [
             {"key": "recommended_action", "label": "Recommended action override", "type": "text", "required": False},
+            {"key": "request_type", "label": "Request type override", "type": "text", "required": False},
+            {"key": "specific_claim", "label": "Specific claim override", "type": "textarea", "required": False},
+            {"key": "confidence", "label": "Confidence override (0-10)", "type": "text", "required": False},
         ],
     },
     {
@@ -559,19 +566,32 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
         return output
 
     if step_id == "remediation":
-        action = inputs.get("recommended_action") or context.get("recommended_action", "needs_human")
-        note_text = {
-            "silent_correction": "No reader-facing note required for this change.",
-            "update_stamp": "Update (April 16, 2026): A previous version omitted newer confirmed details.",
-            "editors_note_bottom": "Editor's Note: A previous version misstated a factual detail and has been corrected.",
-            "editors_note_top": "Editor's Note: A previous version included a material factual error; this article has been corrected.",
-        }.get(action, "Escalate to editor for manual note drafting.")
+        specific_claim = str(inputs.get("specific_claim") or context.get("specific_claim") or "").strip()
+        request_type = str(inputs.get("request_type") or context.get("request_type") or "other").strip().lower()
+        recommended_action = str(inputs.get("recommended_action") or context.get("recommended_action") or "").strip().lower() or None
 
-        output = {
-            "selected_action": action,
-            "suggested_note_text": note_text,
-            "note_writer_guardrails_applied": True,
-        }
+        confidence_raw = inputs.get("confidence", context.get("confidence"))
+        confidence_value: int | None = None
+        if confidence_raw is not None and str(confidence_raw).strip():
+            try:
+                confidence_value = int(str(confidence_raw).strip())
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail="confidence must be an integer") from exc
+            if confidence_value < 0 or confidence_value > 10:
+                raise HTTPException(status_code=400, detail="confidence must be between 0 and 10")
+
+        try:
+            output = remediation_engine.classify_and_write(
+                specific_claim=specific_claim,
+                request_type=request_type,
+                confidence=confidence_value,
+                recommended_action=recommended_action,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Remediation failed: {exc}") from exc
+
         context.update(output)
         return output
 
@@ -955,6 +975,17 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
             article_edit_url=output.get("article_edit_url"),
             fetch_status=output.get("snapshot_status", "unknown"),
             http_status=output.get("public_http_status"),
+            output=output,
+        )
+    if step_id == "remediation":
+        storage.save_remediation_event(
+            run_id=run_id,
+            case_id=context.get("case_id"),
+            selected_action=output.get("selected_action", "unknown"),
+            error_category=output.get("error_category", "other"),
+            note_text=output.get("suggested_note_text", ""),
+            backend=output.get("note_writer_backend", "unknown"),
+            model=output.get("note_writer_model"),
             output=output,
         )
 
