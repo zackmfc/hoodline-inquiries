@@ -186,6 +186,29 @@ class Storage:
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS review_decisions (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id TEXT NOT NULL REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+                        case_id TEXT,
+                        reviewer_username TEXT NOT NULL,
+                        action TEXT NOT NULL CHECK (action IN (
+                            'approve_publish', 'edit_publish', 'reject',
+                            'send_back', 'escalate'
+                        )),
+                        editor_note TEXT NOT NULL DEFAULT '',
+                        reviewer_notes TEXT NOT NULL DEFAULT '',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_review_decisions_run
+                    ON review_decisions(run_id)
+                    """
+                )
 
     def create_run(self, run_id: str, created_by: str | None) -> None:
         with self.connect() as conn:
@@ -694,3 +717,133 @@ class Storage:
                         Jsonb(output),
                     ),
                 )
+
+    def list_review_cases(self, *, status_filter: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Return pipeline runs that have reached the review_dashboard step, enriched with step outputs."""
+        bounded_limit = max(1, min(limit, 200))
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        r.run_id,
+                        r.created_at,
+                        r.created_by,
+                        r.current_index,
+                        r.context_json,
+                        (
+                            SELECT json_agg(
+                                json_build_object(
+                                    'step_id', po.step_id,
+                                    'step_label', po.step_label,
+                                    'output', po.output_json
+                                ) ORDER BY po.step_index
+                            )
+                            FROM pipeline_outputs po
+                            WHERE po.run_id = r.run_id
+                        ) AS step_outputs,
+                        (
+                            SELECT rd.action
+                            FROM review_decisions rd
+                            WHERE rd.run_id = r.run_id
+                            ORDER BY rd.created_at DESC
+                            LIMIT 1
+                        ) AS latest_review_action
+                    FROM pipeline_runs r
+                    WHERE r.current_index >= 7
+                    ORDER BY r.created_at DESC
+                    LIMIT %s
+                    """,
+                    (bounded_limit,),
+                )
+                rows = cur.fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            latest_action = row.get("latest_review_action")
+            if status_filter == "pending" and latest_action is not None:
+                continue
+            if status_filter == "reviewed" and latest_action is None:
+                continue
+            results.append(dict(row))
+        return results
+
+    def get_review_case(self, run_id: str) -> dict[str, Any] | None:
+        """Get a single review case with full context and decision history."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        r.run_id,
+                        r.created_at,
+                        r.created_by,
+                        r.current_index,
+                        r.context_json
+                    FROM pipeline_runs r
+                    WHERE r.run_id = %s AND r.current_index >= 7
+                    """,
+                    (run_id,),
+                )
+                run_row = cur.fetchone()
+                if run_row is None:
+                    return None
+
+                cur.execute(
+                    """
+                    SELECT step_index, step_id, step_label, output_json, created_at
+                    FROM pipeline_outputs
+                    WHERE run_id = %s
+                    ORDER BY step_index ASC
+                    """,
+                    (run_id,),
+                )
+                step_rows = cur.fetchall()
+
+                cur.execute(
+                    """
+                    SELECT id, reviewer_username, action, editor_note, reviewer_notes, created_at
+                    FROM review_decisions
+                    WHERE run_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (run_id,),
+                )
+                decision_rows = cur.fetchall()
+
+        result = dict(run_row)
+        result["step_outputs"] = [dict(r) for r in step_rows]
+        result["decisions"] = [dict(r) for r in decision_rows]
+        return result
+
+    def save_review_decision(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        reviewer_username: str,
+        action: str,
+        editor_note: str = "",
+        reviewer_notes: str = "",
+    ) -> dict[str, Any]:
+        valid_actions = {"approve_publish", "edit_publish", "reject", "send_back", "escalate"}
+        if action not in valid_actions:
+            raise ValueError(f"Invalid action: {action}. Must be one of {valid_actions}")
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO review_decisions (
+                        run_id, case_id, reviewer_username, action, editor_note, reviewer_notes
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id, run_id, case_id, reviewer_username, action, editor_note, reviewer_notes, created_at
+                    """,
+                    (run_id, case_id, reviewer_username, action, editor_note, reviewer_notes),
+                )
+                row = cur.fetchone()
+
+        if row is None:
+            raise RuntimeError("Failed to save review decision")
+        return dict(row)

@@ -159,10 +159,12 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
     {
         "id": "review_dashboard",
         "title": "3.8 Review dashboard",
-        "start": "2026-04-18",
-        "end": "2026-04-19",
+        "start": "2026-04-16",
+        "end": "2026-04-16",
         "min": 1.5,
         "max": 3.0,
+        "completed": True,
+        "completed_at": "2026-04-16",
     },
     {
         "id": "integration",
@@ -724,6 +726,20 @@ async def pipeline(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/review", response_class=HTMLResponse)
+async def review_page(request: Request) -> HTMLResponse:
+    user = page_user_or_redirect(request, "/review")
+    if isinstance(user, RedirectResponse):
+        return user
+    if user["role"] not in ADMIN_ROLES:
+        return RedirectResponse(url="/", status_code=302)
+
+    return templates.TemplateResponse(
+        "review.html",
+        render_context(request),
+    )
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, next: str = "/") -> HTMLResponse:
     if session_user(request) is not None:
@@ -1083,6 +1099,167 @@ async def api_run_logs(run_id: str, request: Request, lines: int = 200) -> JSONR
             parsed.append({"timestamp": now_iso(), "message": raw})
 
     return JSONResponse({"run_id": run_id, "logs": parsed})
+
+
+@app.get("/api/review/cases")
+async def api_review_cases(request: Request, status: str | None = None) -> JSONResponse:
+    ensure_admin_api(request)
+    valid_statuses = {None, "pending", "reviewed"}
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="status must be 'pending' or 'reviewed'")
+
+    cases = storage.list_review_cases(status_filter=status)
+    serialized: list[dict[str, Any]] = []
+    for case in cases:
+        ctx = case.get("context_json") or {}
+        step_outputs = case.get("step_outputs") or []
+
+        step_map: dict[str, Any] = {}
+        if isinstance(step_outputs, list):
+            for so in step_outputs:
+                if isinstance(so, dict):
+                    step_map[so.get("step_id", "")] = so.get("output", so.get("output_json", {}))
+
+        intake = step_map.get("gmail_intake", {})
+        classifier = step_map.get("classifier", {})
+        verification = step_map.get("verification", {})
+        remediation = step_map.get("remediation", {})
+        stager = step_map.get("stager", {})
+        fetcher = step_map.get("fetcher", {})
+
+        serialized.append({
+            "run_id": case["run_id"],
+            "created_at": case["created_at"].isoformat() if hasattr(case["created_at"], "isoformat") else str(case["created_at"]),
+            "created_by": case.get("created_by"),
+            "case_id": ctx.get("case_id"),
+            "latest_review_action": case.get("latest_review_action"),
+            "email": {
+                "sender": intake.get("sender") or ctx.get("sender", ""),
+                "subject": intake.get("subject") or ctx.get("subject", ""),
+                "body": intake.get("body") or ctx.get("body", ""),
+            },
+            "article": {
+                "headline": fetcher.get("headline") or ctx.get("headline", ""),
+                "article_url": ctx.get("article_url", ""),
+                "article_edit_url": ctx.get("article_edit_url", ""),
+                "preview_url": stager.get("preview_url") or ctx.get("preview_url", ""),
+            },
+            "claim": {
+                "specific_claim": classifier.get("specific_claim") or ctx.get("specific_claim", ""),
+                "proposed_correction": classifier.get("proposed_correction") or ctx.get("proposed_correction", ""),
+                "request_type": classifier.get("request_type") or ctx.get("request_type", ""),
+            },
+            "verification": {
+                "confidence": verification.get("confidence") or ctx.get("confidence"),
+                "recommended_action": verification.get("recommended_action") or ctx.get("recommended_action", ""),
+                "evidence": verification.get("evidence") or ctx.get("evidence", []),
+                "contradicting_evidence": verification.get("contradicting_evidence") or ctx.get("contradicting_evidence", []),
+            },
+            "remediation": {
+                "selected_action": remediation.get("selected_action") or ctx.get("selected_action", ""),
+                "error_category": remediation.get("error_category") or ctx.get("error_category", ""),
+                "suggested_note_text": remediation.get("suggested_note_text") or ctx.get("suggested_note_text", ""),
+            },
+            "staged_diff": {
+                "target_field": stager.get("target_field") or ctx.get("target_field", ""),
+                "before": stager.get("before_value") or (ctx.get("recommended_edit") or {}).get("old_value", ""),
+                "after": stager.get("after_value") or (ctx.get("recommended_edit") or {}).get("new_value", ""),
+                "remote_applied": stager.get("remote_applied", False),
+            },
+        })
+
+    return JSONResponse({"cases": serialized})
+
+
+@app.get("/api/review/cases/{run_id}")
+async def api_review_case_detail(run_id: str, request: Request) -> JSONResponse:
+    ensure_admin_api(request)
+    case = storage.get_review_case(run_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail="Review case not found")
+
+    decisions = []
+    for d in case.get("decisions", []):
+        decisions.append({
+            "id": d["id"],
+            "reviewer_username": d["reviewer_username"],
+            "action": d["action"],
+            "editor_note": d["editor_note"],
+            "reviewer_notes": d["reviewer_notes"],
+            "created_at": d["created_at"].isoformat() if hasattr(d["created_at"], "isoformat") else str(d["created_at"]),
+        })
+
+    return JSONResponse({
+        "run_id": case["run_id"],
+        "created_at": case["created_at"].isoformat() if hasattr(case["created_at"], "isoformat") else str(case["created_at"]),
+        "decisions": decisions,
+    })
+
+
+class ReviewActionRequest(BaseModel):
+    action: str
+    editor_note: str = ""
+    reviewer_notes: str = ""
+
+
+@app.post("/api/review/cases/{run_id}/action")
+async def api_review_action(run_id: str, payload: ReviewActionRequest, request: Request) -> JSONResponse:
+    user = ensure_admin_api(request)
+
+    if not storage.run_exists(run_id):
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    run = storage.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    case_id = run.context.get("case_id")
+
+    try:
+        decision = storage.save_review_decision(
+            run_id=run_id,
+            case_id=case_id,
+            reviewer_username=user["username"],
+            action=payload.action,
+            editor_note=payload.editor_note,
+            reviewer_notes=payload.reviewer_notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    append_run_log(
+        run_id,
+        "review_dashboard",
+        f"Review decision: {payload.action}",
+        {
+            "reviewer": user["username"],
+            "action": payload.action,
+            "editor_note": payload.editor_note,
+            "reviewer_notes": payload.reviewer_notes,
+        },
+    )
+
+    logger.info(
+        json.dumps(
+            {
+                "timestamp": now_iso(),
+                "event": "review_decision",
+                "run_id": run_id,
+                "case_id": case_id,
+                "reviewer": user["username"],
+                "action": payload.action,
+            },
+            ensure_ascii=True,
+        )
+    )
+
+    return JSONResponse({
+        "decision_id": decision["id"],
+        "run_id": run_id,
+        "action": decision["action"],
+        "reviewer": decision["reviewer_username"],
+        "created_at": decision["created_at"].isoformat() if hasattr(decision["created_at"], "isoformat") else str(decision["created_at"]),
+    })
 
 
 @app.get("/api/schedule/tasks")

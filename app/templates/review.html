@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Review Dashboard | Hoodline{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="row-between wrap">
+    <div>
+      <h1>Review Dashboard</h1>
+      <p class="muted">Pending correction cases for editor review. Each case assembles data from the full pipeline.</p>
+    </div>
+    <div class="review-filters">
+      <button class="btn ghost filter-btn active" data-filter="pending">Pending</button>
+      <button class="btn ghost filter-btn" data-filter="reviewed">Reviewed</button>
+      <button class="btn ghost filter-btn" data-filter="">All</button>
+    </div>
+  </div>
+</section>
+
+<div id="cases-container" class="cases-stack">
+  <p class="muted" id="cases-loading">Loading cases...</p>
+</div>
+
+<template id="case-template">
+  <article class="panel case-card" data-run-id="">
+    <div class="row-between wrap case-header">
+      <div>
+        <h2 class="case-title"></h2>
+        <p class="muted case-meta"></p>
+      </div>
+      <div class="case-badges">
+        <span class="pill case-confidence"></span>
+        <span class="pill case-action-rec"></span>
+        <span class="pill case-status"></span>
+      </div>
+    </div>
+
+    <div class="grid two case-body">
+      <div class="case-left">
+        <details class="case-section" open>
+          <summary>Original Email</summary>
+          <div class="case-email">
+            <p><strong>From:</strong> <span class="email-sender"></span></p>
+            <p><strong>Subject:</strong> <span class="email-subject"></span></p>
+            <pre class="email-body"></pre>
+          </div>
+        </details>
+
+        <details class="case-section" open>
+          <summary>Detected Article</summary>
+          <div class="case-article">
+            <p class="article-headline"></p>
+            <p class="muted"><a class="article-link" href="#" target="_blank">View article</a>
+              <span class="article-preview-link"></span>
+            </p>
+          </div>
+        </details>
+
+        <details class="case-section" open>
+          <summary>Claim &amp; Proposed Correction</summary>
+          <div class="case-claim">
+            <p><strong>Claim:</strong> <span class="claim-text"></span></p>
+            <p><strong>Proposed correction:</strong> <span class="claim-proposed"></span></p>
+            <p class="muted"><strong>Type:</strong> <span class="claim-type"></span></p>
+          </div>
+        </details>
+      </div>
+
+      <div class="case-right">
+        <details class="case-section" open>
+          <summary>Verification Evidence</summary>
+          <div class="evidence-list"></div>
+          <h4 class="contradicting-header" style="display:none;">Contradicting Evidence</h4>
+          <div class="contradicting-list"></div>
+        </details>
+
+        <details class="case-section" open>
+          <summary>Staged Diff (Before / After)</summary>
+          <div class="case-diff">
+            <p class="muted diff-field"></p>
+            <div class="diff-container">
+              <div class="diff-before">
+                <span class="diff-label">Before</span>
+                <pre class="diff-before-text"></pre>
+              </div>
+              <div class="diff-after">
+                <span class="diff-label">After</span>
+                <pre class="diff-after-text"></pre>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="case-section" open>
+          <summary>Editor's Note (editable)</summary>
+          <textarea class="editor-note-input" rows="3" placeholder="Proposed editor note text..."></textarea>
+        </details>
+      </div>
+    </div>
+
+    <div class="case-actions">
+      <button class="btn action-btn" data-action="approve_publish">Approve &amp; Publish</button>
+      <button class="btn action-btn" data-action="edit_publish">Edit Note &amp; Publish</button>
+      <button class="btn ghost action-btn" data-action="reject">Reject</button>
+      <button class="btn ghost action-btn" data-action="send_back">Send Back for Re-verification</button>
+      <button class="btn ghost action-btn" data-action="escalate">Escalate to Eddie</button>
+      <label class="reviewer-notes-label">
+        <span class="muted">Reviewer notes (optional):</span>
+        <input type="text" class="reviewer-notes-input" placeholder="Internal notes about this decision..." />
+      </label>
+    </div>
+
+    <div class="case-decision-log" style="display:none;">
+      <h4>Decision History</h4>
+      <div class="decision-entries"></div>
+    </div>
+  </article>
+</template>
+
+<script src="/static/review.js"></script>
+{% endblock %}
