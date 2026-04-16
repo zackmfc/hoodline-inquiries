@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Dev Schedule | Hoodline Dashboard{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>Dev Schedule</h1>
+  <p>Start date: Thursday, April 16, 2026. Check items as completed to recalculate timeline projections.</p>
+</section>
+
+<section class="grid three">
+  <article class="panel stat-card">
+    <h2>Progress</h2>
+    <p><span id="done-count">0</span> / <span id="task-count">0</span> complete</p>
+    <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
+  </article>
+
+  <article class="panel stat-card">
+    <h2>Remaining</h2>
+    <p><span id="remaining-hours">0</span> hours</p>
+    <label for="hours-per-day">Build hours/day</label>
+    <input id="hours-per-day" type="number" min="1" max="24" step="1" value="6" />
+  </article>
+
+  <article class="panel stat-card">
+    <h2>Projection</h2>
+    <p id="projected-finish">--</p>
+    <p id="timeline-health" class="muted"></p>
+    <p id="current-time" class="mono"></p>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="row-between">
+    <h2>Tasks</h2>
+    <button class="btn ghost" id="reset-btn" type="button">Reset</button>
+  </div>
+  <ul class="task-list" id="task-list"></ul>
+</section>
+
+<template id="task-template">
+  <li class="task-item">
+    <label class="task-title-wrap">
+      <input type="checkbox" class="task-check" />
+      <span class="task-title"></span>
+    </label>
+    <div class="task-meta">
+      <span class="task-dates"></span>
+      <span class="task-hours"></span>
+      <span class="task-status"></span>
+    </div>
+  </li>
+</template>
+
+<script>
+  window.SCHEDULE_TASKS = {{ schedule_tasks_json | safe }};
+</script>
+<script src="/static/schedule.js"></script>
+{% endblock %}

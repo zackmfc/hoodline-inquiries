@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Pipeline Tester | Hoodline Dashboard{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="row-between wrap">
+    <div>
+      <h1>Pipeline Tester</h1>
+      <p>Run each correction-system step in sequence. Each completed step records structured output and logs.</p>
+    </div>
+    <button id="new-run-btn" class="btn" type="button">Start New Run</button>
+  </div>
+  <div class="run-banner" id="run-banner">No active run</div>
+</section>
+
+<section class="grid two">
+  <article class="panel">
+    <h2>Steps</h2>
+    <div id="steps-container" class="steps-stack"></div>
+  </article>
+
+  <article class="panel">
+    <h2>Run Logs</h2>
+    <p class="muted">Server logs are also persisted to <code>logs/runs/&lt;run_id&gt;.log</code>.</p>
+    <pre id="logs-view" class="logs-view">Start a run to stream logs.</pre>
+  </article>
+</section>
+
+<section class="panel">
+  <h2>Step Output</h2>
+  <pre id="output-view" class="output-view">No step output yet.</pre>
+</section>
+
+<template id="step-template">
+  <section class="step-card">
+    <div class="row-between wrap">
+      <div>
+        <h3 class="step-label"></h3>
+        <p class="muted step-desc"></p>
+      </div>
+      <span class="pill step-state">Pending</span>
+    </div>
+    <form class="step-form"></form>
+    <button class="btn run-step-btn" type="button">Run Step</button>
+  </section>
+</template>
+
+<script>
+  window.PIPELINE_STEPS = {{ pipeline_steps_json | safe }};
+</script>
+<script src="/static/pipeline.js"></script>
+{% endblock %}

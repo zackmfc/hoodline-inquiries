@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Home | Hoodline Dashboard{% endblock %}
+{% block content %}
+<section class="panel hero">
+  <h1>Application Control Center</h1>
+  <p>
+    Build and test the correction workflow here. The pipeline tester is admin-gated and executes one step at a time
+    with structured outputs and logs.
+  </p>
+</section>
+
+<section class="grid three">
+  <article class="panel card">
+    <h2>Development Schedule</h2>
+    <p>Interactive timeline with checkbox progress and projected completion date.</p>
+    <a class="btn" href="/schedule">Open Schedule Tool</a>
+  </article>
+
+  <article class="panel card">
+    <h2>Pipeline Tester</h2>
+    <p>Run each pipeline stage sequentially, provide input data, and inspect outputs and logs.</p>
+    <a class="btn" href="/pipeline">Open Pipeline Tester</a>
+  </article>
+
+  <article class="panel card">
+    <h2>Hoodline CMS</h2>
+    <p>Dedicated editor account will be used by Decodo automation and draft staging flow.</p>
+    <a class="btn" href="{{ cms_base_url }}" target="_blank" rel="noreferrer">Open CMS</a>
+  </article>
+</section>
+
+<section class="panel muted-panel">
+  <h2>Runtime Notes</h2>
+  <p>Admin credentials are configured with <code>APP_ADMIN_USER</code> and <code>APP_ADMIN_PASSWORD</code>.</p>
+  <p>Pipeline logs are written to <code>logs/pipeline.log</code> and per-run logs in <code>logs/runs/</code>.</p>
+</section>
+{% endblock %}

@@ -1,9 +1,40 @@
 services:
-  dashboard:
-    image: nginx:1.27-alpine
-    container_name: hoodline_dashboard
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hoodline_app
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      APP_ADMIN_USER: admin
+      APP_ADMIN_PASSWORD: changeme
+      APP_SESSION_SECRET: change-this-session-secret
+      CMS_BASE_URL: https://hoodline.impress3.com
+      DATABASE_URL: postgresql://hoodline:hoodline@postgres:5432/hoodline
     ports:
-      - "8080:80"
+      - "8080:8080"
     volumes:
-      - ./dashboard:/usr/share/nginx/html:ro
+      - ./:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hoodline_postgres
+    environment:
+      POSTGRES_USER: hoodline
+      POSTGRES_PASSWORD: hoodline
+      POSTGRES_DB: hoodline
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hoodline -d hoodline"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pg_data:

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Admin Login | Hoodline Dashboard{% endblock %}
+{% block content %}
+<section class="panel auth-panel">
+  <h1>Admin Login</h1>
+  <p>Pipeline tester is restricted to admin users.</p>
+  {% if error %}
+  <p class="error">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/login" class="auth-form">
+    <input type="hidden" name="next" value="{{ next }}" />
+
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" required />
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" required />
+
+    <button class="btn" type="submit">Login</button>
+  </form>
+</section>
+{% endblock %}
