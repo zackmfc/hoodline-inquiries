@@ -2,7 +2,7 @@ const STORAGE_KEY = "hoodline_schedule_checks_v2";
 const TASKS = Array.isArray(window.SCHEDULE_TASKS) ? window.SCHEDULE_TASKS : [];
 
 const state = {
-  checks: loadChecks(),
+  checks: { ...defaultChecks(), ...loadChecks() },
   hoursPerDay: 6,
 };
 
@@ -37,7 +37,7 @@ function init() {
   });
 
   els.resetBtn.addEventListener("click", () => {
-    state.checks = {};
+    state.checks = defaultChecks();
     saveChecks(state.checks);
     renderSummary();
   });
@@ -120,7 +120,12 @@ function renderTasks(now) {
 }
 
 function getTaskStatus(task, now, checked) {
-  if (checked) return { label: "Done", className: "status-done" };
+  if (checked) {
+    if (task.completed_at) {
+      return { label: `Done (${task.completed_at})`, className: "status-done" };
+    }
+    return { label: "Done", className: "status-done" };
+  }
 
   const start = parseDate(task.start, false);
   const end = parseDate(task.end, true);
@@ -173,6 +178,16 @@ function loadChecks() {
   } catch {
     return {};
   }
+}
+
+function defaultChecks() {
+  const defaults = {};
+  for (const task of TASKS) {
+    if (task.completed === true) {
+      defaults[task.id] = true;
+    }
+  }
+  return defaults;
 }
 
 function saveChecks(value) {
