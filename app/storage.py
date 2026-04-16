@@ -127,6 +127,33 @@ class Storage:
                     )
                     """
                 )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        username TEXT PRIMARY KEY,
+                        password_hash TEXT NOT NULL,
+                        role TEXT NOT NULL CHECK (role IN ('superuser', 'admin', 'user')),
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS fetcher_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        run_id TEXT REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+                        case_id TEXT,
+                        article_url TEXT NOT NULL,
+                        article_edit_url TEXT,
+                        fetch_status TEXT NOT NULL,
+                        http_status INTEGER,
+                        output_json JSONB NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
 
     def create_run(self, run_id: str, created_by: str | None) -> None:
         with self.connect() as conn:
@@ -138,6 +165,107 @@ class Storage:
                     """,
                     (run_id, created_by),
                 )
+
+    def create_user(self, *, username: str, password_hash: str, role: str, is_active: bool = True) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (username, password_hash, role, is_active)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (username, password_hash, role, is_active),
+                )
+
+    def upsert_user(
+        self,
+        *,
+        username: str,
+        password_hash: str,
+        role: str,
+        is_active: bool = True,
+    ) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO users (username, password_hash, role, is_active)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (username)
+                    DO UPDATE SET
+                        password_hash = EXCLUDED.password_hash,
+                        role = EXCLUDED.role,
+                        is_active = EXCLUDED.is_active,
+                        updated_at = NOW()
+                    """,
+                    (username, password_hash, role, is_active),
+                )
+
+    def get_user(self, username: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT username, password_hash, role, is_active, created_at, updated_at
+                    FROM users
+                    WHERE username = %s
+                    """,
+                    (username,),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT username, role, is_active, created_at, updated_at
+                    FROM users
+                    ORDER BY username ASC
+                    """
+                )
+                rows = cur.fetchall()
+        return [dict(row) for row in rows]
+
+    def update_user(
+        self,
+        *,
+        username: str,
+        role: str | None = None,
+        password_hash: str | None = None,
+        is_active: bool | None = None,
+    ) -> None:
+        updates: list[str] = []
+        params: list[Any] = []
+        if role is not None:
+            updates.append("role = %s")
+            params.append(role)
+        if password_hash is not None:
+            updates.append("password_hash = %s")
+            params.append(password_hash)
+        if is_active is not None:
+            updates.append("is_active = %s")
+            params.append(is_active)
+
+        if not updates:
+            return
+
+        updates.append("updated_at = NOW()")
+        params.append(username)
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE users
+                    SET {", ".join(updates)}
+                    WHERE username = %s
+                    """,
+                    params,
+                )
+                if cur.rowcount == 0:
+                    raise ValueError("User not found")
 
     def run_exists(self, run_id: str) -> bool:
         with self.connect() as conn:
@@ -414,6 +542,43 @@ class Storage:
                         strategy,
                         confidence,
                         needs_human,
+                        Jsonb(output),
+                    ),
+                )
+
+    def save_fetcher_event(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        article_url: str,
+        article_edit_url: str | None,
+        fetch_status: str,
+        http_status: int | None,
+        output: dict[str, Any],
+    ) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO fetcher_events (
+                        run_id,
+                        case_id,
+                        article_url,
+                        article_edit_url,
+                        fetch_status,
+                        http_status,
+                        output_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run_id,
+                        case_id,
+                        article_url,
+                        article_edit_url,
+                        fetch_status,
+                        http_status,
                         Jsonb(output),
                     ),
                 )

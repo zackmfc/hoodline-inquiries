@@ -16,11 +16,19 @@
     <a class="btn" href="/schedule">Open Schedule Tool</a>
   </article>
 
+  {% if is_admin %}
   <article class="panel card">
     <h2>Pipeline Tester</h2>
     <p>Run each pipeline stage sequentially, provide input data, and inspect outputs and logs.</p>
     <a class="btn" href="/pipeline">Open Pipeline Tester</a>
   </article>
+  {% else %}
+  <article class="panel card">
+    <h2>Pipeline Tester</h2>
+    <p>Admin role required.</p>
+    <span class="pill">Restricted</span>
+  </article>
+  {% endif %}
 
   <article class="panel card">
     <h2>Hoodline CMS</h2>
@@ -31,7 +39,7 @@
 
 <section class="panel muted-panel">
   <h2>Runtime Notes</h2>
-  <p>Admin credentials are configured with <code>APP_ADMIN_USER</code> and <code>APP_ADMIN_PASSWORD</code>.</p>
+  <p>Accounts and roles are stored in PostgreSQL with encrypted password hashes.</p>
   <p>Pipeline logs are written to <code>logs/pipeline.log</code> and per-run logs in <code>logs/runs/</code>.</p>
 </section>
 {% endblock %}

@@ -295,7 +295,10 @@ pre,
 .step-form input,
 .step-form textarea,
 #hours-per-day,
-.auth-form input {
+.auth-form input,
+.auth-form select,
+.user-row input,
+.user-row select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -342,6 +345,37 @@ pre,
 .error {
   color: #b03a2e;
   font-weight: 600;
+}
+
+.success {
+  color: #1f7a4f;
+  font-weight: 600;
+}
+
+.user-meta {
+  margin: 6px 0 0;
+  font-size: 0.86rem;
+}
+
+.users-list {
+  display: grid;
+  gap: 10px;
+}
+
+.user-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  background: #fff;
+}
+
+.user-row-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .muted-panel p {

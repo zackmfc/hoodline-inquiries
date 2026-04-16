@@ -6,11 +6,11 @@ services:
     container_name: hoodline_app
     user: "${UID:-1000}:${GID:-1000}"
     environment:
-      APP_ADMIN_USER: admin
-      APP_ADMIN_PASSWORD: changeme
       APP_SESSION_SECRET: change-this-session-secret
       CMS_BASE_URL: https://hoodline.impress3.com
       DATABASE_URL: postgresql://hoodline:hoodline@postgres:5432/hoodline
+      DEFAULT_SUPERUSER_USERNAME: zack@impress3.com
+      DEFAULT_SUPERUSER_PASSWORD: billGAtes1!1
       GMAIL_DELEGATED_USER: ""
       GMAIL_DEFAULT_QUERY: label:auto/correction-candidate is:unread
       GMAIL_SERVICE_ACCOUNT_FILE: ""
@@ -22,6 +22,9 @@ services:
       ANTHROPIC_BASE_URL: https://api.anthropic.com
       RESOLVER_MIN_SIMILARITY: "0.65"
       RESOLVER_MAX_CANDIDATES: "250"
+      FETCHER_TIMEOUT_SECONDS: "30"
+      FETCHER_USER_AGENT: HoodlineCorrectionsBot/1.0 (+https://hoodline.com)
+      CMS_FETCHER_SESSION_COOKIE: ""
     ports:
       - "8080:8080"
     volumes:

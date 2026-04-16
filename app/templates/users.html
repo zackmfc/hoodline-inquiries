@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Users | Hoodline Dashboard{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>User Management</h1>
+  <p>Superuser can create admins and users. Admin can create and manage users only.</p>
+  {% if error %}
+  <p class="error">{{ error }}</p>
+  {% endif %}
+  {% if success %}
+  <p class="success">{{ success }}</p>
+  {% endif %}
+</section>
+
+<section class="grid two">
+  <article class="panel">
+    <h2>Create User</h2>
+    <form method="post" action="/users/create" class="auth-form">
+      <label for="new-username">Username</label>
+      <input id="new-username" type="email" name="username" required />
+
+      <label for="new-password">Password</label>
+      <input id="new-password" type="password" name="password" required />
+
+      <label for="new-role">Role</label>
+      <select id="new-role" name="role">
+        <option value="user">user</option>
+        {% if is_superuser %}
+        <option value="admin">admin</option>
+        {% endif %}
+      </select>
+
+      <button class="btn" type="submit">Create</button>
+    </form>
+  </article>
+
+  <article class="panel">
+    <h2>Accounts</h2>
+    <div class="users-list">
+      {% for user in users %}
+      <form class="user-row" method="post" action="/users/{{ user.username }}/update">
+        <div class="user-row-head">
+          <strong>{{ user.username }}</strong>
+          <span class="pill">{{ user.role }}</span>
+          {% if not user.is_active %}
+          <span class="pill status-late">inactive</span>
+          {% endif %}
+        </div>
+
+        <label>Role
+          <select name="role" {% if current_user.role == 'admin' and user.role != 'user' %}disabled{% endif %}>
+            <option value="user" {% if user.role == 'user' %}selected{% endif %}>user</option>
+            {% if is_superuser %}
+            <option value="admin" {% if user.role == 'admin' %}selected{% endif %}>admin</option>
+            <option value="superuser" {% if user.role == 'superuser' %}selected{% endif %}>superuser</option>
+            {% endif %}
+          </select>
+        </label>
+
+        <label>New password (optional)
+          <input type="password" name="password" placeholder="Leave blank to keep current" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %} />
+        </label>
+
+        <label>Active
+          <select name="is_active" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %}>
+            <option value="true" {% if user.is_active %}selected{% endif %}>true</option>
+            <option value="false" {% if not user.is_active %}selected{% endif %}>false</option>
+          </select>
+        </label>
+
+        <button class="btn ghost" type="submit" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %}>Update</button>
+      </form>
+      {% else %}
+      <p class="muted">No users found.</p>
+      {% endfor %}
+    </div>
+  </article>
+</section>
+{% endblock %}

@@ -16,7 +16,9 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.auth import hash_password, verify_password
 from app.classifier import MessageClassifier
+from app.fetcher import ArticleFetcher
 from app.gmail_client import GmailClient
 from app.resolver import ArticleResolver, ResolverConfig
 from app.storage import PipelineRunRecord, Storage
@@ -40,10 +42,10 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
-admin_user = os.getenv("APP_ADMIN_USER", "admin")
-admin_password = os.getenv("APP_ADMIN_PASSWORD", "changeme")
 cms_base_url = os.getenv("CMS_BASE_URL", "https://hoodline.impress3.com")
 database_url = os.getenv("DATABASE_URL", "postgresql://hoodline:hoodline@postgres:5432/hoodline")
+default_superuser_username = os.getenv("DEFAULT_SUPERUSER_USERNAME", "zack@impress3.com").strip().lower()
+default_superuser_password = os.getenv("DEFAULT_SUPERUSER_PASSWORD", "billGAtes1!1")
 
 storage = Storage(database_url)
 gmail_client = GmailClient()
@@ -58,6 +60,7 @@ article_resolver = ArticleResolver(
         max_candidates=resolver_max_candidates,
     ),
 )
+article_fetcher = ArticleFetcher()
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -67,14 +70,17 @@ if not logger.handlers:
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
+ALLOWED_ROLES = {"superuser", "admin", "user"}
+ADMIN_ROLES = {"superuser", "admin"}
+
 SCHEDULE_TASKS: list[dict[str, Any]] = [
     {
         "id": "foundation",
         "title": "Foundation: Docker + Postgres + migrations + service skeleton",
         "start": "2026-04-16",
         "end": "2026-04-16",
-        "min": 1.0,
-        "max": 2.0,
+        "min": 0.5,
+        "max": 0.75,
         "completed": True,
         "completed_at": "2026-04-16",
     },
@@ -83,8 +89,8 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
         "title": "3.1 Gmail intake",
         "start": "2026-04-16",
         "end": "2026-04-16",
-        "min": 1.0,
-        "max": 2.0,
+        "min": 0.5,
+        "max": 0.75,
         "completed": True,
         "completed_at": "2026-04-16",
     },
@@ -93,8 +99,8 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
         "title": "3.2 Classifier",
         "start": "2026-04-16",
         "end": "2026-04-16",
-        "min": 0.25,
-        "max": 0.75,
+        "min": 0.2,
+        "max": 0.3,
         "completed": True,
         "completed_at": "2026-04-16",
     },
@@ -103,58 +109,60 @@ SCHEDULE_TASKS: list[dict[str, Any]] = [
         "title": "3.3 Article resolver",
         "start": "2026-04-16",
         "end": "2026-04-16",
-        "min": 1.0,
-        "max": 2.0,
+        "min": 0.1,
+        "max": 0.2,
         "completed": True,
         "completed_at": "2026-04-16",
     },
     {
         "id": "fetcher",
         "title": "3.4 Article fetcher",
-        "start": "2026-04-17",
-        "end": "2026-04-17",
-        "min": 2.0,
-        "max": 4.0,
+        "start": "2026-04-16",
+        "end": "2026-04-16",
+        "min": 0.5,
+        "max": 1.0,
+        "completed": True,
+        "completed_at": "2026-04-16",
     },
     {
         "id": "verification",
         "title": "3.5 Verification agent",
-        "start": "2026-04-18",
-        "end": "2026-04-19",
-        "min": 4.0,
-        "max": 8.0,
+        "start": "2026-04-17",
+        "end": "2026-04-18",
+        "min": 3.0,
+        "max": 6.0,
     },
     {
         "id": "remediation",
         "title": "3.6 Remediation classifier + note writer",
-        "start": "2026-04-20",
-        "end": "2026-04-20",
+        "start": "2026-04-19",
+        "end": "2026-04-19",
         "min": 0.5,
-        "max": 1.5,
+        "max": 1.0,
     },
     {
         "id": "stager",
         "title": "3.7 Draft stager",
-        "start": "2026-04-21",
-        "end": "2026-04-21",
-        "min": 2.0,
-        "max": 4.0,
+        "start": "2026-04-19",
+        "end": "2026-04-20",
+        "min": 1.5,
+        "max": 3.0,
     },
     {
         "id": "review_dashboard",
         "title": "3.8 Review dashboard",
-        "start": "2026-04-22",
-        "end": "2026-04-22",
-        "min": 2.0,
-        "max": 4.0,
+        "start": "2026-04-20",
+        "end": "2026-04-20",
+        "min": 1.5,
+        "max": 3.0,
     },
     {
         "id": "integration",
         "title": "End-to-end integration, smoke tests, docs, runbooks",
-        "start": "2026-04-23",
-        "end": "2026-04-23",
-        "min": 1.0,
-        "max": 2.0,
+        "start": "2026-04-20",
+        "end": "2026-04-20",
+        "min": 0.75,
+        "max": 1.5,
     },
 ]
 
@@ -202,9 +210,10 @@ PIPELINE_STEPS: list[dict[str, Any]] = [
     {
         "id": "fetcher",
         "label": "3.4 Article fetcher",
-        "description": "Fetch and summarize article metadata from URL and CMS edit URL.",
+        "description": "Fetch and parse public article metadata, outbound links, and existing correction notes.",
         "inputs": [
             {"key": "article_url", "label": "Article URL", "type": "text", "required": True},
+            {"key": "article_edit_url", "label": "CMS edit URL override (optional)", "type": "text", "required": False},
         ],
     },
     {
@@ -252,6 +261,30 @@ class StepExecutionRequest(BaseModel):
 @app.on_event("startup")
 def startup() -> None:
     storage.init_schema()
+    bootstrap_superuser()
+
+
+def bootstrap_superuser() -> None:
+    existing = storage.get_user(default_superuser_username)
+    if existing is not None:
+        return
+
+    storage.create_user(
+        username=default_superuser_username,
+        password_hash=hash_password(default_superuser_password),
+        role="superuser",
+        is_active=True,
+    )
+    logger.info(
+        json.dumps(
+            {
+                "timestamp": now_iso(),
+                "event": "bootstrap_superuser_created",
+                "username": default_superuser_username,
+            },
+            ensure_ascii=True,
+        )
+    )
 
 
 def now_iso() -> str:
@@ -276,9 +309,51 @@ def append_run_log(run_id: str, step_id: str, message: str, payload: dict[str, A
         fh.write(line + "\n")
 
 
-def ensure_admin(request: Request) -> None:
-    if not request.session.get("is_admin"):
-        raise HTTPException(status_code=401, detail="Admin login required")
+def session_user(request: Request) -> dict[str, Any] | None:
+    username = request.session.get("username")
+    role = request.session.get("role")
+    if not username or not role:
+        return None
+    return {
+        "username": username,
+        "role": role,
+        "is_admin": role in ADMIN_ROLES,
+        "is_superuser": role == "superuser",
+    }
+
+
+def ensure_authenticated_api(request: Request) -> dict[str, Any]:
+    user = session_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Login required")
+    return user
+
+
+def ensure_admin_api(request: Request) -> dict[str, Any]:
+    user = ensure_authenticated_api(request)
+    if user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admin role required")
+    return user
+
+
+def page_user_or_redirect(request: Request, next_path: str) -> dict[str, Any] | RedirectResponse:
+    user = session_user(request)
+    if user is None:
+        return RedirectResponse(url=f"/login?next={next_path}", status_code=302)
+    return user
+
+
+def render_context(request: Request, **kwargs: Any) -> dict[str, Any]:
+    user = session_user(request)
+    ctx = {
+        "request": request,
+        "cms_base_url": cms_base_url,
+        "current_user": user,
+        "is_admin": bool(user and user["is_admin"]),
+        "is_superuser": bool(user and user["is_superuser"]),
+    }
+    ctx.update(kwargs)
+    return ctx
 
 
 def parse_article_url(text: str) -> str | None:
@@ -437,16 +512,13 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
         article_url = inputs.get("article_url") or context.get("article_url")
         if not article_url:
             raise HTTPException(status_code=400, detail="article_url is required")
-
-        output = {
-            "article_url": article_url,
-            "headline": "Sample fetched article headline",
-            "byline": "Hoodline Staff",
-            "publish_date": "2026-03-12",
-            "outbound_links_count": 5,
-            "existing_notes": [],
-            "snapshot_status": "captured",
-        }
+        article_edit_url = (inputs.get("article_edit_url") or context.get("article_edit_url") or "").strip() or None
+        try:
+            output = article_fetcher.fetch(article_url=article_url, article_edit_url=article_edit_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Fetcher failed: {exc}") from exc
         context.update(output)
         return output
 
@@ -568,56 +640,44 @@ def validate_required_inputs(run: PipelineRunRecord, step: dict[str, Any], input
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(
-        "home.html",
-        {
-            "request": request,
-            "is_admin": bool(request.session.get("is_admin")),
-            "cms_base_url": cms_base_url,
-        },
-    )
+    gate = page_user_or_redirect(request, "/")
+    if isinstance(gate, RedirectResponse):
+        return gate
+    return templates.TemplateResponse("home.html", render_context(request))
 
 
 @app.get("/schedule", response_class=HTMLResponse)
 async def schedule(request: Request) -> HTMLResponse:
+    gate = page_user_or_redirect(request, "/schedule")
+    if isinstance(gate, RedirectResponse):
+        return gate
     return templates.TemplateResponse(
         "schedule.html",
-        {
-            "request": request,
-            "is_admin": bool(request.session.get("is_admin")),
-            "schedule_tasks_json": json.dumps(SCHEDULE_TASKS),
-            "cms_base_url": cms_base_url,
-        },
+        render_context(request, schedule_tasks_json=json.dumps(SCHEDULE_TASKS)),
     )
 
 
 @app.get("/pipeline", response_class=HTMLResponse)
 async def pipeline(request: Request) -> HTMLResponse:
-    if not request.session.get("is_admin"):
-        return RedirectResponse(url="/login?next=/pipeline", status_code=302)
+    user = page_user_or_redirect(request, "/pipeline")
+    if isinstance(user, RedirectResponse):
+        return user
+    if user["role"] not in ADMIN_ROLES:
+        return RedirectResponse(url="/", status_code=302)
 
     return templates.TemplateResponse(
         "pipeline.html",
-        {
-            "request": request,
-            "is_admin": True,
-            "pipeline_steps_json": json.dumps(PIPELINE_STEPS),
-            "cms_base_url": cms_base_url,
-        },
+        render_context(request, pipeline_steps_json=json.dumps(PIPELINE_STEPS)),
     )
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, next: str = "/pipeline") -> HTMLResponse:
+async def login_page(request: Request, next: str = "/") -> HTMLResponse:
+    if session_user(request) is not None:
+        return RedirectResponse(url=next or "/", status_code=302)
     return templates.TemplateResponse(
         "login.html",
-        {
-            "request": request,
-            "next": next,
-            "error": None,
-            "is_admin": bool(request.session.get("is_admin")),
-            "cms_base_url": cms_base_url,
-        },
+        render_context(request, next=next, error=None),
     )
 
 
@@ -626,22 +686,17 @@ async def login_submit(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    next: str = Form("/pipeline"),
+    next: str = Form("/"),
 ) -> HTMLResponse:
-    if username == admin_user and password == admin_password:
-        request.session["is_admin"] = True
-        request.session["username"] = username
+    account = storage.get_user(username.strip().lower())
+    if account and account.get("is_active") and verify_password(password, account.get("password_hash", "")):
+        request.session["username"] = account["username"]
+        request.session["role"] = account["role"]
         return RedirectResponse(url=next, status_code=302)
 
     return templates.TemplateResponse(
         "login.html",
-        {
-            "request": request,
-            "next": next,
-            "error": "Invalid credentials.",
-            "is_admin": False,
-            "cms_base_url": cms_base_url,
-        },
+        render_context(request, next=next, error="Invalid credentials."),
         status_code=401,
     )
 
@@ -649,7 +704,157 @@ async def login_submit(
 @app.get("/logout")
 async def logout(request: Request) -> RedirectResponse:
     request.session.clear()
-    return RedirectResponse(url="/", status_code=302)
+    return RedirectResponse(url="/login", status_code=302)
+
+
+@app.get("/users", response_class=HTMLResponse)
+async def users_page(request: Request) -> HTMLResponse:
+    user = page_user_or_redirect(request, "/users")
+    if isinstance(user, RedirectResponse):
+        return user
+    if user["role"] not in ADMIN_ROLES:
+        return RedirectResponse(url="/", status_code=302)
+
+    users = storage.list_users()
+    return templates.TemplateResponse(
+        "users.html",
+        render_context(request, users=users, error=None, success=None),
+    )
+
+
+@app.post("/users/create", response_class=HTMLResponse)
+async def users_create(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    role: str = Form("user"),
+) -> HTMLResponse:
+    actor = page_user_or_redirect(request, "/users")
+    if isinstance(actor, RedirectResponse):
+        return actor
+    if actor["role"] not in ADMIN_ROLES:
+        return RedirectResponse(url="/", status_code=302)
+
+    normalized_username = username.strip().lower()
+    requested_role = role.strip().lower()
+    if requested_role not in ALLOWED_ROLES:
+        requested_role = "user"
+
+    if actor["role"] == "admin" and requested_role != "user":
+        requested_role = "user"
+
+    if not normalized_username or len(password) < 8:
+        users = storage.list_users()
+        return templates.TemplateResponse(
+            "users.html",
+            render_context(request, users=users, error="Username required and password must be at least 8 characters.", success=None),
+            status_code=400,
+        )
+
+    if storage.get_user(normalized_username) is not None:
+        users = storage.list_users()
+        return templates.TemplateResponse(
+            "users.html",
+            render_context(request, users=users, error="User already exists.", success=None),
+            status_code=400,
+        )
+
+    storage.create_user(
+        username=normalized_username,
+        password_hash=hash_password(password),
+        role=requested_role,
+        is_active=True,
+    )
+    users = storage.list_users()
+    return templates.TemplateResponse(
+        "users.html",
+        render_context(request, users=users, error=None, success=f"Created user {normalized_username} ({requested_role})."),
+    )
+
+
+@app.post("/users/{target_username}/update", response_class=HTMLResponse)
+async def users_update(
+    target_username: str,
+    request: Request,
+    role: str = Form(""),
+    password: str = Form(""),
+    is_active: str = Form("true"),
+) -> HTMLResponse:
+    actor = page_user_or_redirect(request, "/users")
+    if isinstance(actor, RedirectResponse):
+        return actor
+    if actor["role"] not in ADMIN_ROLES:
+        return RedirectResponse(url="/", status_code=302)
+
+    normalized_target = target_username.strip().lower()
+    account = storage.get_user(normalized_target)
+    if account is None:
+        users = storage.list_users()
+        return templates.TemplateResponse(
+            "users.html",
+            render_context(request, users=users, error="Target user not found.", success=None),
+            status_code=404,
+        )
+
+    if actor["role"] == "admin":
+        if account["role"] == "superuser":
+            users = storage.list_users()
+            return templates.TemplateResponse(
+                "users.html",
+                render_context(request, users=users, error="Admin cannot edit superuser accounts.", success=None),
+                status_code=403,
+            )
+        if role and role.strip().lower() != "user":
+            role = "user"
+
+    requested_role = role.strip().lower() if role else account["role"]
+    if requested_role not in ALLOWED_ROLES:
+        requested_role = account["role"]
+
+    if actor["role"] == "admin" and requested_role != "user":
+        requested_role = "user"
+
+    if account["role"] == "superuser" and actor["role"] != "superuser":
+        users = storage.list_users()
+        return templates.TemplateResponse(
+            "users.html",
+            render_context(request, users=users, error="Only superuser can edit superuser accounts.", success=None),
+            status_code=403,
+        )
+
+    password_hash = None
+    password_clean = password.strip()
+    if password_clean:
+        if len(password_clean) < 8:
+            users = storage.list_users()
+            return templates.TemplateResponse(
+                "users.html",
+                render_context(request, users=users, error="Password must be at least 8 characters.", success=None),
+                status_code=400,
+            )
+        password_hash = hash_password(password_clean)
+
+    active_bool = is_active.strip().lower() == "true"
+    try:
+        storage.update_user(
+            username=normalized_target,
+            role=requested_role,
+            password_hash=password_hash,
+            is_active=active_bool,
+        )
+    except ValueError:
+        users = storage.list_users()
+        return templates.TemplateResponse(
+            "users.html",
+            render_context(request, users=users, error="Target user not found.", success=None),
+            status_code=404,
+        )
+
+    users = storage.list_users()
+    return templates.TemplateResponse(
+        "users.html",
+        render_context(request, users=users, error=None, success=f"Updated user {normalized_target}."),
+    )
 
 
 @app.get("/health")
@@ -659,15 +864,15 @@ async def health() -> dict[str, str]:
 
 @app.get("/api/pipeline/steps")
 async def api_steps(request: Request) -> JSONResponse:
-    ensure_admin(request)
+    ensure_admin_api(request)
     return JSONResponse({"steps": PIPELINE_STEPS})
 
 
 @app.post("/api/pipeline/runs")
 async def api_create_run(request: Request) -> JSONResponse:
-    ensure_admin(request)
+    user = ensure_admin_api(request)
     run_id = uuid4().hex
-    created_by = request.session.get("username")
+    created_by = user["username"]
 
     storage.create_run(run_id, created_by)
     append_run_log(run_id, "system", "Run created", {"current_step": PIPELINE_STEPS[0]["id"]})
@@ -679,14 +884,14 @@ async def api_create_run(request: Request) -> JSONResponse:
 
 @app.get("/api/pipeline/runs/{run_id}")
 async def api_get_run(run_id: str, request: Request) -> JSONResponse:
-    ensure_admin(request)
+    ensure_admin_api(request)
     run = get_run_or_404(run_id)
     return JSONResponse(run_to_response(run))
 
 
 @app.post("/api/pipeline/runs/{run_id}/steps/{step_id}")
 async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest, request: Request) -> JSONResponse:
-    ensure_admin(request)
+    ensure_admin_api(request)
     run = get_run_or_404(run_id)
 
     if run.current_index >= len(PIPELINE_STEPS):
@@ -742,6 +947,16 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
             needs_human=bool(output.get("needs_human")),
             output=output,
         )
+    if step_id == "fetcher":
+        storage.save_fetcher_event(
+            run_id=run_id,
+            case_id=context.get("case_id"),
+            article_url=output.get("article_url", ""),
+            article_edit_url=output.get("article_edit_url"),
+            fetch_status=output.get("snapshot_status", "unknown"),
+            http_status=output.get("public_http_status"),
+            output=output,
+        )
 
     step_index = run.current_index
     storage.append_step_output(
@@ -763,7 +978,7 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
 
 @app.get("/api/pipeline/runs/{run_id}/logs")
 async def api_run_logs(run_id: str, request: Request, lines: int = 200) -> JSONResponse:
-    ensure_admin(request)
+    ensure_admin_api(request)
 
     if not storage.run_exists(run_id):
         raise HTTPException(status_code=404, detail="Run not found")
@@ -790,5 +1005,6 @@ async def api_run_logs(run_id: str, request: Request, lines: int = 200) -> JSONR
 
 
 @app.get("/api/schedule/tasks")
-async def api_schedule_tasks() -> JSONResponse:
+async def api_schedule_tasks(request: Request) -> JSONResponse:
+    ensure_authenticated_api(request)
     return JSONResponse({"tasks": SCHEDULE_TASKS})

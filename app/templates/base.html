@@ -14,16 +14,22 @@
     <div class="brand">
       <p class="kicker">Hoodline Inquiries</p>
       <a href="/" class="brand-link">Correction Ops Dashboard</a>
+      {% if current_user %}
+      <p class="muted user-meta">Signed in as <strong>{{ current_user.username }}</strong> ({{ current_user.role }})</p>
+      {% endif %}
     </div>
     <nav class="top-nav">
       <a href="/">Home</a>
       <a href="/schedule">Dev Schedule</a>
-      <a href="/pipeline">Pipeline Tester</a>
-      <a href="{{ cms_base_url }}" target="_blank" rel="noreferrer">Hoodline CMS</a>
       {% if is_admin %}
+      <a href="/pipeline">Pipeline Tester</a>
+      <a href="/users">Users</a>
+      {% endif %}
+      <a href="{{ cms_base_url }}" target="_blank" rel="noreferrer">Hoodline CMS</a>
+      {% if current_user %}
       <a href="/logout">Logout</a>
       {% else %}
-      <a href="/login?next=/pipeline">Admin Login</a>
+      <a href="/login?next=/">Login</a>
       {% endif %}
     </nav>
   </header>
