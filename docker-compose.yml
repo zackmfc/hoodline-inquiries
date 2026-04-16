@@ -1,0 +1,9 @@
+services:
+  dashboard:
+    image: nginx:1.27-alpine
+    container_name: hoodline_dashboard
+    ports:
+      - "8080:80"
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro
+    restart: unless-stopped
