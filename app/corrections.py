@@ -25,13 +25,7 @@ logger = logging.getLogger("hoodline.corrections")
 ASSESS_SYSTEM_PROMPT = """
 You triage reader correction requests for the Hoodline newsroom.
 
-Output ONLY valid JSON, no markdown fences, no prose, with this exact shape:
-{
-  "CRVS": integer 0-10,
-  "SAS": integer 0-10,
-  "crvs_reasoning": string,
-  "sas_reasoning": string
-}
+Output ONLY valid JSON, no markdown fences, no prose.
 
 Scoring rules:
 - CRVS (Correction Request Validity Score): higher when the correction
@@ -45,6 +39,26 @@ Scoring rules:
   illegitimate (spoofed, anonymous without context, unrelated). If the
   sender's authority is difficult to establish or unclear, SAS should rank
   in the 6-7 range.
+
+Also extract, if present in the email (otherwise empty string):
+{
+  "article_url": string   // a hoodline.com URL to the article, or ""
+  "article_title": string // the article's title as the sender quotes it,
+                          // or the title they appear to be describing.
+                          // Prefer exact quoted title; fall back to a
+                          // close paraphrase only if a clear title mention
+                          // is implied. Otherwise "".
+}
+
+Your full output must be a single JSON object:
+{
+  "CRVS": integer 0-10,
+  "SAS": integer 0-10,
+  "crvs_reasoning": string,
+  "sas_reasoning": string,
+  "article_url": string,
+  "article_title": string
+}
 """.strip()
 
 
@@ -206,11 +220,15 @@ def assess_email(
 
     crvs = _clamp_int(parsed.get("CRVS"))
     sas = _clamp_int(parsed.get("SAS"))
+    article_url_hint = str(parsed.get("article_url") or "").strip()
+    article_title_hint = str(parsed.get("article_title") or "").strip()
     return {
         "CRVS": crvs,
         "SAS": sas,
         "crvs_reasoning": str(parsed.get("crvs_reasoning") or "").strip(),
         "sas_reasoning": str(parsed.get("sas_reasoning") or "").strip(),
+        "article_url_hint": article_url_hint,
+        "article_title_hint": article_title_hint,
         "model": model,
         "raw": parsed,
     }

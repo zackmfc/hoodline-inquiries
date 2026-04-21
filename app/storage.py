@@ -581,6 +581,48 @@ class Storage:
 
         return [dict(row) for row in rows]
 
+    def search_editorial_posts(
+        self,
+        *,
+        terms: list[str],
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        """Return editorial posts where every term appears (ILIKE) in title OR content.
+
+        Newest first. Used by the article locator to find the Discord
+        message for an article given the first N words of its title.
+        """
+        cleaned = [t.strip() for t in terms if t and t.strip()]
+        if not cleaned:
+            return []
+
+        bounded_limit = max(1, min(limit, 200))
+        conditions: list[str] = []
+        params: list[Any] = []
+        for term in cleaned:
+            conditions.append("(title ILIKE %s OR content ILIKE %s)")
+            pattern = f"%{term}%"
+            params.append(pattern)
+            params.append(pattern)
+
+        params.append(bounded_limit)
+        where_clause = " AND ".join(conditions)
+
+        sql = f"""
+            SELECT id, source, channel, message_id, title, article_url, cms_edit_url, content, posted_at, created_at, updated_at
+            FROM editorial_posts
+            WHERE {where_clause}
+            ORDER BY COALESCE(posted_at, created_at) DESC
+            LIMIT %s
+        """
+
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params))
+                rows = cur.fetchall()
+
+        return [dict(row) for row in rows]
+
     def save_resolver_event(
         self,
         *,

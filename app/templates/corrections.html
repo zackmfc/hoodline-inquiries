@@ -89,11 +89,27 @@
   <header class="corrections-step-head">
     <span class="corrections-step-num">2</span>
     <div>
-      <h2>Paste Discord message</h2>
-      <p class="muted">Paste the editorial Discord message that contains the CMS edit link for this article.</p>
+      <h2>Locate the Discord message</h2>
+      <p class="muted">
+        Try auto-locating the editorial Discord post from the email — or paste the message manually below.
+      </p>
     </div>
     <span class="pill step-state">Locked</span>
   </header>
+
+  <div class="locator-panel">
+    <div class="locator-head">
+      <div>
+        <h3>Auto-locate from email</h3>
+        <p class="muted">Search Discord cache for the title; fall back to Google (via Decodo) + page scrape if needed.</p>
+      </div>
+      <button type="button" class="btn btn-accent" id="locator-run-btn">Run auto-locate</button>
+    </div>
+    <p class="muted" id="locator-status"></p>
+    <ol class="locator-trace" id="locator-trace" hidden></ol>
+  </div>
+
+  <div class="form-divider"><span>or paste manually</span></div>
 
   <form id="discord-form" class="corrections-form">
     <label class="field">

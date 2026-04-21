@@ -1035,6 +1035,76 @@ pre,
   overflow: hidden;
 }
 
+.locator-panel {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: #fff;
+  margin-bottom: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.locator-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.locator-head h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.locator-head p {
+  margin: 2px 0 0;
+  font-size: 0.85rem;
+}
+
+.locator-trace {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 0.86rem;
+}
+
+.locator-trace-item {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbf9;
+}
+
+.locator-trace-item.is-hit {
+  background: rgba(31, 127, 103, 0.08);
+  border-color: rgba(31, 127, 103, 0.4);
+}
+
+.locator-trace-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.locator-trace-step {
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.locator-trace-detail {
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 .form-divider {
   display: flex;
   align-items: center;

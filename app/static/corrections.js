@@ -264,8 +264,12 @@
       gateVerdict.classList.remove("gate-pass", "gate-fail");
       if (res.gate_passed) {
         gateVerdict.classList.add("gate-pass");
+        const hintBits = [];
+        if (res.article_url_hint) hintBits.push(`URL: ${res.article_url_hint}`);
+        if (res.article_title_hint) hintBits.push(`Title: "${res.article_title_hint}"`);
         gateVerdict.textContent =
-          "Both scores above 4 — proceed to step 2.";
+          "Both scores above 4 — proceed to step 2." +
+          (hintBits.length ? `  (${hintBits.join(" · ")})` : "");
         setStepState(steps.email, "done");
         unlockStep(steps.discord);
         setStatus(assessStatus, "", "ok");
@@ -281,13 +285,104 @@
     }
   });
 
-  // ── Step 2: Discord → CMS edit link ─────────────────────────────
+  // ── Step 2: Locate via cascade, or manual paste ────────────────
   const discordForm = document.getElementById("discord-form");
   const discordStatus = document.getElementById("discord-status");
   const discordResult = document.getElementById("discord-result");
   const articleIdEl = document.getElementById("article-id");
   const editUrlLink = document.getElementById("edit-url-link");
   const cmsEditBtn = document.getElementById("cms-edit-btn");
+
+  const locatorRunBtn = document.getElementById("locator-run-btn");
+  const locatorStatus = document.getElementById("locator-status");
+  const locatorTrace = document.getElementById("locator-trace");
+
+  function setDiscordResolved({ article_id, cms_edit_url }) {
+    articleIdEl.textContent = article_id ?? "—";
+    editUrlLink.textContent = cms_edit_url;
+    editUrlLink.href = cms_edit_url;
+    cmsEditBtn.href = cms_edit_url;
+    discordResult.hidden = false;
+    state.discord = { found: true, article_id, cms_edit_url };
+    setStepState(steps.discord, "done");
+    unlockStep(steps.cms);
+  }
+
+  function renderLocatorTrace(trace) {
+    locatorTrace.innerHTML = "";
+    if (!trace || trace.length === 0) {
+      locatorTrace.hidden = true;
+      return;
+    }
+    trace.forEach((t) => {
+      const li = document.createElement("li");
+      li.className = "locator-trace-item" + (t.matched ? " is-hit" : "");
+      const head = document.createElement("div");
+      head.className = "locator-trace-head";
+      const stepSpan = document.createElement("span");
+      stepSpan.className = "locator-trace-step";
+      stepSpan.textContent = `${t.step} · ${t.action}`;
+      head.appendChild(stepSpan);
+      if (t.matched) {
+        const badge = document.createElement("span");
+        badge.className = "pill status-done";
+        badge.textContent = "matched";
+        head.appendChild(badge);
+      }
+      li.appendChild(head);
+      if (t.detail) {
+        const detail = document.createElement("div");
+        detail.className = "locator-trace-detail";
+        detail.textContent = t.detail;
+        li.appendChild(detail);
+      }
+      locatorTrace.appendChild(li);
+    });
+    locatorTrace.hidden = false;
+  }
+
+  locatorRunBtn.addEventListener("click", async () => {
+    if (!state.email) {
+      setStatus(locatorStatus, "Run step 1 first.", "error");
+      return;
+    }
+
+    setStatus(locatorStatus, "Locating article… (may scrape via Decodo)", "info");
+    locatorTrace.hidden = true;
+    locatorTrace.innerHTML = "";
+
+    const payload = {
+      subject: state.email.subject || "",
+      body: state.email.body || "",
+      article_url_hint: (state.assess && state.assess.article_url_hint) || "",
+      article_title_hint: (state.assess && state.assess.article_title_hint) || "",
+    };
+
+    try {
+      const res = await postJSON("/api/corrections/locate-discord", payload);
+      renderLocatorTrace(res.trace);
+
+      if (res.found && res.cms_edit_url) {
+        setStatus(
+          locatorStatus,
+          `Found article #${res.article_id} via "${res.authoritative_title}".`,
+          "ok"
+        );
+        setDiscordResolved({
+          article_id: res.article_id,
+          cms_edit_url: res.cms_edit_url,
+        });
+      } else {
+        setStatus(
+          locatorStatus,
+          "Couldn't auto-locate the Discord message. Paste it manually below.",
+          "error"
+        );
+      }
+    } catch (err) {
+      setStatus(locatorStatus, `Error: ${err.message}`, "error");
+    }
+  });
 
   discordForm.addEventListener("submit", async (e) => {
     e.preventDefault();

@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
+from app.article_locator import ArticleLocator
 from app.auth import hash_password, verify_password
 from app.classifier import MessageClassifier
 from app.cms_client import CMSClient
@@ -24,6 +25,7 @@ from app.corrections import (
     extract_cms_edit_link,
     generate_correction,
 )
+from app.decodo_client import DecodoClient
 from app.discord_cache import DiscordCachePopulator
 from app.fetcher import ArticleFetcher
 from app.gmail_client import GmailClient
@@ -76,6 +78,8 @@ verification_agent = VerificationAgent()
 draft_stager = DraftStager(cms_base_url=cms_base_url)
 discord_cache = DiscordCachePopulator()
 cms_client = CMSClient()
+decodo_client = DecodoClient()
+article_locator = ArticleLocator(storage=storage, decodo=decodo_client)
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -1066,6 +1070,38 @@ async def api_corrections_parse_discord(
         raise HTTPException(status_code=400, detail="message is required")
 
     result = extract_cms_edit_link(payload.message)
+    return JSONResponse(result)
+
+
+class LocateDiscordRequest(BaseModel):
+    subject: str = ""
+    body: str = ""
+    article_url_hint: str = ""
+    article_title_hint: str = ""
+
+
+@app.post("/api/corrections/locate-discord")
+async def api_corrections_locate_discord(
+    payload: LocateDiscordRequest, request: Request
+) -> JSONResponse:
+    ensure_admin_api(request)
+
+    if not payload.subject.strip() and not payload.body.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="subject or body is required to locate the article",
+        )
+
+    try:
+        result = article_locator.locate(
+            email_subject=payload.subject,
+            email_body=payload.body,
+            hinted_url=payload.article_url_hint,
+            hinted_title=payload.article_title_hint,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Locate failed: {exc}") from exc
+
     return JSONResponse(result)
 
 
