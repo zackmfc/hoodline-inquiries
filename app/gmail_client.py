@@ -32,6 +32,25 @@ class GmailClient:
         label_ids: list[str] | None,
         max_results: int,
     ) -> dict[str, Any]:
+        results = self.fetch_intake_messages(
+            message_id=message_id,
+            query=query,
+            label_ids=label_ids,
+            max_results=1,
+        )
+        if not results:
+            raise ValueError("No Gmail messages found")
+        return results[0]
+
+    def fetch_intake_messages(
+        self,
+        *,
+        message_id: str | None = None,
+        query: str | None = None,
+        label_ids: list[str] | None = None,
+        max_results: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Fetch up to max_results emails from Gmail. Returns a list of normalized messages."""
         if not self.configured:
             raise ValueError(
                 "Gmail API is not configured. Set GMAIL_DELEGATED_USER plus GMAIL_SERVICE_ACCOUNT_FILE or GMAIL_SERVICE_ACCOUNT_JSON."
@@ -41,23 +60,26 @@ class GmailClient:
 
         if message_id:
             msg = service.users().messages().get(userId="me", id=message_id, format="full").execute()
-            return self._normalize_message(msg)
+            return [self._normalize_message(msg)]
 
         q = query or self.default_query
         request = service.users().messages().list(
             userId="me",
             q=q,
             labelIds=label_ids or None,
-            maxResults=max(1, min(max_results, 10)),
+            maxResults=max(1, min(max_results, 50)),
         )
         listing = request.execute()
         messages = listing.get("messages", [])
         if not messages:
             raise ValueError(f"No Gmail messages matched query: {q}")
 
-        selected = messages[0]
-        msg = service.users().messages().get(userId="me", id=selected["id"], format="full").execute()
-        return self._normalize_message(msg)
+        results: list[dict[str, Any]] = []
+        for entry in messages:
+            msg = service.users().messages().get(userId="me", id=entry["id"], format="full").execute()
+            results.append(self._normalize_message(msg))
+
+        return results
 
     def _build_service(self):
         credentials = self._load_credentials()
@@ -92,6 +114,7 @@ class GmailClient:
             "subject": subject,
             "body": body,
             "snippet": message.get("snippet", ""),
+            "internal_date_ms": message.get("internalDate"),
         }
 
     def _header_value(self, headers: list[dict[str, Any]], name: str) -> str:

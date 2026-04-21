@@ -11,7 +11,7 @@
   <div class="checks-grid">
     {% for check in checks %}
     <div class="check-row {{ 'check-ok' if check.ok else 'check-warn' }}">
-      <span class="check-icon">{{ '&check;' if check.ok else '!' }}</span>
+      <span class="check-icon">{% if check.ok %}&#x2713;{% else %}!{% endif %}</span>
       <div>
         <strong>{{ check.id | replace('_', ' ') | title }}</strong>
         <p class="muted">{{ check.detail }}</p>
@@ -60,9 +60,9 @@ DEFAULT_SUPERUSER_PASSWORD=billGAtes1!1</pre>
     <table class="setup-table">
       <thead><tr><th>Component</th><th>Env Var</th><th>Default</th><th>Recommendation</th></tr></thead>
       <tbody>
-        <tr><td>Classifier</td><td><code>CLASSIFIER_MODEL</code></td><td>claude-3-5-sonnet-latest</td><td>Sonnet is sufficient</td></tr>
+        <tr><td>Classifier</td><td><code>CLASSIFIER_MODEL</code></td><td>claude-sonnet-4-20250514</td><td>Sonnet is sufficient</td></tr>
         <tr><td>Verification</td><td><code>VERIFICATION_MODEL</code></td><td>claude-sonnet-4-20250514</td><td>Sonnet 4 for best accuracy</td></tr>
-        <tr><td>Remediation</td><td><code>REMEDIATION_MODEL</code></td><td>claude-3-5-sonnet-latest</td><td>Sonnet is sufficient</td></tr>
+        <tr><td>Remediation</td><td><code>REMEDIATION_MODEL</code></td><td>claude-sonnet-4-20250514</td><td>Sonnet is sufficient</td></tr>
       </tbody>
     </table>
   </div>
@@ -70,77 +70,131 @@ DEFAULT_SUPERUSER_PASSWORD=billGAtes1!1</pre>
 
 <section class="panel">
   <h2>Step 3: Gmail API Integration</h2>
-  <p class="muted">Required for: Automatic email intake from contact@hoodline.com (step 3.1 in gmail_api mode).</p>
+  <p class="muted">Status: <span class="status-done">Configured</span> &mdash; delegated service account for contact@hoodline.com is active.</p>
   <div class="setup-step">
-    <p>Without this, you can still use <strong>manual mode</strong> in the Pipeline Tester to paste emails by hand.</p>
-    <h3>How to set up</h3>
-    <ol>
-      <li>Create a <strong>Google Cloud project</strong> (or use an existing one)</li>
-      <li>Enable the <strong>Gmail API</strong> in the project</li>
-      <li>Create a <strong>Service Account</strong>:
-        <ul>
-          <li>IAM &amp; Admin &rarr; Service Accounts &rarr; Create</li>
-          <li>Download the JSON key file</li>
-        </ul>
-      </li>
-      <li>Set up <strong>domain-wide delegation</strong>:
-        <ul>
-          <li>In Google Workspace Admin &rarr; Security &rarr; API controls &rarr; Domain-wide delegation</li>
-          <li>Add the service account's client ID</li>
-          <li>Scope: <code>https://www.googleapis.com/auth/gmail.readonly</code></li>
-        </ul>
-      </li>
-      <li>Create a <strong>Gmail filter</strong> on contact@hoodline.com:
-        <ul>
-          <li>Match keywords: <code>correction, error, mistake, inaccurate, wrong, incorrect, typo, update, editor's note, retract</code></li>
-          <li>Apply label: <code>auto/correction-candidate</code></li>
-        </ul>
-      </li>
-      <li>Set env vars:</li>
-    </ol>
-    <pre class="code-block">GMAIL_DELEGATED_USER=contact@hoodline.com
-GMAIL_SERVICE_ACCOUNT_FILE=/run/secrets/gmail-service-account.json
-# OR inline:
-GMAIL_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
-GMAIL_DEFAULT_QUERY=label:auto/correction-candidate is:unread</pre>
-    <p>Mount the JSON key file into the container via Docker volume or secrets.</p>
+    <h3>Current configuration</h3>
+    <table class="setup-table">
+      <tbody>
+        <tr><td><code>GMAIL_DELEGATED_USER</code></td><td>contact@hoodline.com</td></tr>
+        <tr><td><code>GMAIL_DEFAULT_QUERY</code></td><td>label:auto/correction-candidate is:unread</td></tr>
+        <tr><td><code>GMAIL_SERVICE_ACCOUNT_FILE</code></td><td>/app/secrets/intense-pier-493623-i3-12e0fdbe17ca.json</td></tr>
+      </tbody>
+    </table>
+    <p>Domain-wide delegation has been granted. The Pipeline Tester defaults to <strong>gmail_api</strong> mode and fetches the last 5 emails matching the query above.</p>
+
+    <h3>Gmail filter</h3>
+    <p>A Gmail filter on contact@hoodline.com matches incoming emails containing keywords (<code>correction, error, mistake, inaccurate, wrong, incorrect, typo, update, editor's note, retract</code>) and applies the label <code>auto/correction-candidate</code>.</p>
+
+    <h3>Changing the configuration</h3>
+    <p>To update the query, delegated user, or service account, edit the corresponding env vars in <code>.env</code> and restart:</p>
+    <pre class="code-block">docker compose up -d</pre>
   </div>
 </section>
 
 <section class="panel">
-  <h2>Step 4: Hoodline CMS Access</h2>
-  <p class="muted">Required for: Article fetching from CMS (3.4) and draft staging (3.7).</p>
+  <h2>Step 4: Discord Integration</h2>
+  <p class="muted">Required for: Article resolution (3.3) &mdash; finding which article a correction refers to.</p>
   <div class="setup-step">
-    <h3>4a. Fetcher session cookie (optional)</h3>
-    <p>Allows the fetcher to probe CMS edit URLs. Without it, the fetcher only reads the public article page.</p>
-    <ol>
-      <li>Log into <a href="{{ cms_base_url }}" target="_blank" rel="noreferrer">{{ cms_base_url }}</a> as a bot/service account</li>
-      <li>Copy the session cookie from browser dev tools</li>
-      <li>Set: <code>CMS_FETCHER_SESSION_COOKIE=wordpress_logged_in_xxx=value</code></li>
-    </ol>
-    <p class="muted">This cookie will expire periodically. An automated refresh mechanism is planned but not yet built.</p>
+    <p>The article resolver searches cached Discord messages across <strong>all text channels</strong> in the guild to match correction requests to articles. Each message typically contains the article title followed by a CMS edit link (e.g., <code>https://hoodline.impress3.com/articles/565283/edit</code>).</p>
 
-    <h3>4b. Draft stager credentials</h3>
-    <p>Enables the stager to write drafts to the CMS via WordPress REST API.</p>
+    <h3>4a. Create a Discord bot</h3>
     <ol>
-      <li>In WordPress, create a dedicated <strong>Application Password</strong>:
-        <ul>
-          <li>Users &rarr; your bot account &rarr; Application Passwords</li>
-          <li>Create new, copy the generated password</li>
-        </ul>
-      </li>
-      <li>Set env vars:</li>
+      <li>Go to <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Discord Developer Portal</a></li>
+      <li>Create a new application (e.g., "Hoodline Corrections Bot")</li>
+      <li>Go to Bot &rarr; click "Add Bot"</li>
+      <li>Under Privileged Gateway Intents, enable <strong>Message Content Intent</strong></li>
+      <li>Copy the bot token</li>
     </ol>
-    <pre class="code-block">CMS_STAGER_USERNAME=hoodline-bot
-CMS_STAGER_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
-STAGER_ENABLE_REMOTE_WRITES=true
-STAGER_MODE=wp_rest</pre>
+
+    <h3>4b. Invite the bot to your server</h3>
+    <ol>
+      <li>Go to OAuth2 &rarr; URL Generator</li>
+      <li>Select scope: <code>bot</code></li>
+      <li>Select permissions: <code>Read Messages/View Channels</code>, <code>Read Message History</code></li>
+      <li>Open the generated URL and add the bot to the Hoodline editorial Discord server</li>
+    </ol>
+
+    <h3>4c. Get the guild (server) ID</h3>
+    <ol>
+      <li>In Discord, enable Developer Mode (User Settings &rarr; Advanced &rarr; Developer Mode)</li>
+      <li>Right-click the server name in the sidebar</li>
+      <li>Click "Copy Server ID"</li>
+    </ol>
+
+    <h3>4d. Set env vars</h3>
+    <pre class="code-block">DISCORD_BOT_TOKEN=your-bot-token-here
+DISCORD_GUILD_ID=1123130231755132929
+DISCORD_CACHE_DAYS=90</pre>
+
+    <h3>4e. Populate the article cache</h3>
+    <p>After configuring the bot, trigger a cache refresh to scan all text channels in the guild:</p>
+    <pre class="code-block">curl -X POST http://localhost:8080/api/discord/refresh \
+  -H "Cookie: session=&lt;your-session-cookie&gt;"</pre>
+    <p>This scans every text channel for messages containing a <code>hoodline.impress3.com/articles/{id}/edit</code> URL. The text before the URL is captured as the article title. Results are cached in the <code>editorial_posts</code> table.</p>
+
+    <h3>How the resolver uses the cache</h3>
+    <p>When a correction email arrives, the resolver:</p>
+    <ol>
+      <li>Checks if the email contains a direct hoodline.com URL &rarr; uses that</li>
+      <li>Otherwise, extracts the article title/topic from the email</li>
+      <li>Searches the cached <code>editorial_posts</code> table for matching titles (fuzzy match using similarity scoring)</li>
+      <li>The matching message contains the <strong>CMS edit link</strong> and <strong>article ID</strong> &mdash; this is how the pipeline knows which article to fetch and stage edits to</li>
+    </ol>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Step 5: Hoodline CMS API</h2>
+  <p class="muted">Required for: Reading article content (3.4) and writing corrections (3.7).</p>
+  <div class="setup-step">
+    <p>The pipeline reads and writes article data via the <strong>Hoodline CMS API</strong>. This API must be built on the CMS side and exposed at <code>GET/PATCH /api/articles/{id}</code>.</p>
+
+    <h3>5a. API fields</h3>
+    <p>The API should support reading and writing these fields for each article:</p>
+    <table class="setup-table">
+      <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>title</code></td><td>string</td><td>Article headline</td></tr>
+        <tr><td><code>meta_title</code></td><td>string</td><td>SEO/meta title</td></tr>
+        <tr><td><code>meta</code></td><td>string</td><td>Meta description</td></tr>
+        <tr><td><code>excerpt</code></td><td>string</td><td>Article excerpt/summary</td></tr>
+        <tr><td><code>social_media_excerpt</code></td><td>string</td><td>Social sharing excerpt</td></tr>
+        <tr><td><code>body</code></td><td>HTML</td><td>Article body as HTML fragment</td></tr>
+        <tr><td><code>primary_tag</code></td><td>string</td><td>Primary category/tag</td></tr>
+        <tr><td><code>metros</code></td><td>array</td><td>Metro area associations</td></tr>
+        <tr><td><code>image_url</code></td><td>string</td><td>Featured image URL</td></tr>
+        <tr><td><code>featured_image_attribution</code></td><td>string</td><td>Image credit/attribution</td></tr>
+        <tr><td><code>article_slug</code></td><td>string</td><td>URL slug</td></tr>
+        <tr><td><code>editor</code></td><td>string</td><td>Assigned editor</td></tr>
+        <tr><td><code>writer</code></td><td>string</td><td>Article author</td></tr>
+      </tbody>
+    </table>
+
+    <h3>5b. API endpoints</h3>
+    <table class="setup-table">
+      <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET</code></td><td><code>/api/articles/{id}</code></td><td>Read all fields for an article</td></tr>
+        <tr><td><code>PATCH</code></td><td><code>/api/articles/{id}</code></td><td>Update specific fields (partial update)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>5c. Set env vars</h3>
+    <pre class="code-block">CMS_API_BASE_URL=https://hoodline.impress3.com
+CMS_API_KEY=your-api-key-here</pre>
+
+    <h3>5d. Proxy endpoints</h3>
+    <p>This dashboard proxies CMS API calls for convenience:</p>
+    <ul>
+      <li><code>GET /api/cms/articles/{id}</code> &mdash; reads article from CMS</li>
+      <li><code>PATCH /api/cms/articles/{id}</code> &mdash; writes updated fields to CMS</li>
+    </ul>
     <p><strong>Safety:</strong> Leave <code>STAGER_ENABLE_REMOTE_WRITES=false</code> until you've tested the pipeline end-to-end in dry-run mode. The stager never publishes, only creates/updates drafts.</p>
   </div>
 </section>
 
 <section class="panel">
-  <h2>Step 5: Session Secret</h2>
+  <h2>Step 6: Session Secret</h2>
   <p class="muted">Required for: Production deployment security.</p>
   <div class="setup-step">
     <p>The dashboard uses signed session cookies. The default secret is insecure.</p>
@@ -153,7 +207,7 @@ APP_SESSION_SECRET=your-generated-secret-here</pre>
 </section>
 
 <section class="panel">
-  <h2>Step 6: Create Editor Accounts</h2>
+  <h2>Step 7: Create Editor Accounts</h2>
   <p class="muted">Required for: Review dashboard access.</p>
   <div class="setup-step">
     <ol>
@@ -174,7 +228,7 @@ APP_SESSION_SECRET=your-generated-secret-here</pre>
 </section>
 
 <section class="panel">
-  <h2>Step 7: Test the Pipeline End-to-End</h2>
+  <h2>Step 8: Test the Pipeline End-to-End</h2>
   <p class="muted">Recommended before enabling live Gmail intake or CMS writes.</p>
   <div class="setup-step">
     <ol>
@@ -197,13 +251,14 @@ APP_SESSION_SECRET=your-generated-secret-here</pre>
 </section>
 
 <section class="panel">
-  <h2>Step 8: Go Live</h2>
+  <h2>Step 9: Go Live</h2>
   <p class="muted">Once all checks are green and you've tested end-to-end.</p>
   <div class="setup-step">
     <ol>
       <li>Set <code>ANTHROPIC_API_KEY</code> for Claude-powered analysis</li>
       <li>Configure Gmail API for automatic intake</li>
-      <li>Set CMS credentials and <code>STAGER_ENABLE_REMOTE_WRITES=true</code> for draft staging</li>
+      <li>Set <code>CMS_API_BASE_URL</code> and <code>CMS_API_KEY</code> for article read/write</li>
+      <li>Run a Discord cache refresh (<code>POST /api/discord/refresh</code>)</li>
       <li>Change <code>APP_SESSION_SECRET</code> to a strong random value</li>
       <li>Change the default superuser password</li>
       <li>Create editor accounts</li>
@@ -220,22 +275,24 @@ APP_SESSION_SECRET=your-generated-secret-here</pre>
       <tbody>
         <tr><td><code>APP_SESSION_SECRET</code></td><td>Prod</td><td>dev secret</td><td>Signs session cookies</td></tr>
         <tr><td><code>DATABASE_URL</code></td><td>Yes</td><td>local postgres</td><td>PostgreSQL connection string</td></tr>
-        <tr><td><code>CMS_BASE_URL</code></td><td>Yes</td><td>hoodline.impress3.com</td><td>WordPress CMS URL</td></tr>
+        <tr><td><code>CMS_BASE_URL</code></td><td>Yes</td><td>hoodline.impress3.com</td><td>Hoodline CMS URL</td></tr>
+        <tr><td><code>CMS_API_BASE_URL</code></td><td>Yes</td><td>hoodline.impress3.com</td><td>CMS API base URL for article read/write</td></tr>
+        <tr><td><code>CMS_API_KEY</code></td><td>No*</td><td>(empty)</td><td>Bearer token for CMS API authentication</td></tr>
         <tr><td><code>DEFAULT_SUPERUSER_USERNAME</code></td><td>Yes</td><td>zack@impress3.com</td><td>Bootstrap superuser</td></tr>
         <tr><td><code>DEFAULT_SUPERUSER_PASSWORD</code></td><td>Yes</td><td>(set in env)</td><td>Bootstrap superuser password</td></tr>
         <tr><td><code>ANTHROPIC_API_KEY</code></td><td>No*</td><td>(empty)</td><td>Claude API key for LLM steps</td></tr>
         <tr><td><code>GMAIL_DELEGATED_USER</code></td><td>No*</td><td>(empty)</td><td>Gmail address to poll</td></tr>
         <tr><td><code>GMAIL_SERVICE_ACCOUNT_FILE</code></td><td>No*</td><td>(empty)</td><td>Path to Google service account JSON</td></tr>
         <tr><td><code>GMAIL_SERVICE_ACCOUNT_JSON</code></td><td>No*</td><td>(empty)</td><td>Inline service account JSON</td></tr>
-        <tr><td><code>CMS_STAGER_USERNAME</code></td><td>No*</td><td>(empty)</td><td>WordPress username for REST API</td></tr>
-        <tr><td><code>CMS_STAGER_APP_PASSWORD</code></td><td>No*</td><td>(empty)</td><td>WordPress application password</td></tr>
-        <tr><td><code>STAGER_ENABLE_REMOTE_WRITES</code></td><td>No</td><td>false</td><td>Enable actual CMS draft writes</td></tr>
-        <tr><td><code>CMS_FETCHER_SESSION_COOKIE</code></td><td>No</td><td>(empty)</td><td>CMS auth cookie for edit URL probing</td></tr>
+        <tr><td><code>DISCORD_BOT_TOKEN</code></td><td>No*</td><td>(empty)</td><td>Discord bot token for reading guild messages</td></tr>
+        <tr><td><code>DISCORD_GUILD_ID</code></td><td>No*</td><td>(empty)</td><td>Discord server ID to scan all text channels</td></tr>
+        <tr><td><code>DISCORD_CACHE_DAYS</code></td><td>No</td><td>90</td><td>Days of messages to cache from Discord</td></tr>
+        <tr><td><code>STAGER_ENABLE_REMOTE_WRITES</code></td><td>No</td><td>false</td><td>Enable actual CMS draft writes via API</td></tr>
         <tr><td><code>CLASSIFIER_BACKEND</code></td><td>No</td><td>auto</td><td>auto | claude | rules</td></tr>
-        <tr><td><code>CLASSIFIER_MODEL</code></td><td>No</td><td>claude-3-5-sonnet-latest</td><td>Claude model for classifier</td></tr>
+        <tr><td><code>CLASSIFIER_MODEL</code></td><td>No</td><td>claude-sonnet-4-20250514</td><td>Claude model for classifier</td></tr>
         <tr><td><code>VERIFICATION_MODEL</code></td><td>No</td><td>claude-sonnet-4-20250514</td><td>Claude model for verification</td></tr>
         <tr><td><code>REMEDIATION_BACKEND</code></td><td>No</td><td>auto</td><td>auto | claude | rules</td></tr>
-        <tr><td><code>REMEDIATION_MODEL</code></td><td>No</td><td>claude-3-5-sonnet-latest</td><td>Claude model for remediation</td></tr>
+        <tr><td><code>REMEDIATION_MODEL</code></td><td>No</td><td>claude-sonnet-4-20250514</td><td>Claude model for remediation</td></tr>
       </tbody>
     </table>
     <p class="muted">* Not required to start the pipeline, but needed for full functionality. Without these, the corresponding features use fallback modes or are unavailable.</p>

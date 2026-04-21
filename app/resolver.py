@@ -184,7 +184,8 @@ class ArticleResolver:
         parsed = urlparse(cleaned)
         if parsed.scheme not in {"http", "https"}:
             return None
-        if "hoodline.com" not in (parsed.netloc or ""):
+        netloc = (parsed.netloc or "").lower()
+        if "hoodline.com" not in netloc and "hoodline.impress3.com" not in netloc:
             return None
 
         path = parsed.path or "/"

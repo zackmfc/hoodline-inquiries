@@ -10,6 +10,20 @@
 </section>
 
 <section class="grid three">
+  {% if is_admin %}
+  <article class="panel card">
+    <h2>Corrections Wizard</h2>
+    <p>Paste an inbound correction email, score its validity and authority, pull the CMS edit link from Discord, then generate a web-search-backed correction with Claude.</p>
+    <a class="btn btn-accent" href="/corrections">Open Corrections Wizard</a>
+  </article>
+  {% else %}
+  <article class="panel card">
+    <h2>Corrections Wizard</h2>
+    <p>Admin role required.</p>
+    <span class="pill">Restricted</span>
+  </article>
+  {% endif %}
+
   <article class="panel card">
     <h2>Development Schedule</h2>
     <p>Interactive timeline with checkbox progress and projected completion date.</p>

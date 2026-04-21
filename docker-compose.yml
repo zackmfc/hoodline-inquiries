@@ -5,44 +5,15 @@ services:
       dockerfile: Dockerfile
     container_name: hoodline_app
     user: "${UID:-1000}:${GID:-1000}"
+    env_file:
+      - .env
     environment:
-      APP_SESSION_SECRET: change-this-session-secret
-      CMS_BASE_URL: https://hoodline.impress3.com
       DATABASE_URL: postgresql://hoodline:hoodline@postgres:5432/hoodline
-      DEFAULT_SUPERUSER_USERNAME: zack@impress3.com
-      DEFAULT_SUPERUSER_PASSWORD: billGAtes1!1
-      GMAIL_DELEGATED_USER: ""
-      GMAIL_DEFAULT_QUERY: label:auto/correction-candidate is:unread
-      GMAIL_SERVICE_ACCOUNT_FILE: ""
-      GMAIL_SERVICE_ACCOUNT_JSON: ""
-      CLASSIFIER_BACKEND: auto
-      CLASSIFIER_MODEL: claude-3-5-sonnet-latest
-      CLASSIFIER_TIMEOUT_SECONDS: "45"
-      ANTHROPIC_API_KEY: ""
-      ANTHROPIC_BASE_URL: https://api.anthropic.com
-      RESOLVER_MIN_SIMILARITY: "0.65"
-      RESOLVER_MAX_CANDIDATES: "250"
-      FETCHER_TIMEOUT_SECONDS: "30"
-      FETCHER_USER_AGENT: HoodlineCorrectionsBot/1.0 (+https://hoodline.com)
-      CMS_FETCHER_SESSION_COOKIE: ""
-      REMEDIATION_BACKEND: auto
-      REMEDIATION_MODEL: claude-3-5-sonnet-latest
-      REMEDIATION_TIMEOUT_SECONDS: "45"
-      STAGER_MODE: dry_run
-      STAGER_TIMEOUT_SECONDS: "30"
-      STAGER_USER_AGENT: HoodlineDraftStager/1.0 (+https://hoodline.com)
-      STAGER_ENABLE_REMOTE_WRITES: "false"
-      CMS_STAGER_USERNAME: ""
-      CMS_STAGER_APP_PASSWORD: ""
-      VERIFICATION_MODEL: claude-sonnet-4-20250514
-      VERIFICATION_TIMEOUT_SECONDS: "60"
-      VERIFICATION_LINK_TIMEOUT: "15"
-      VERIFICATION_MAX_LINKS: "8"
-      VERIFICATION_MAX_SEARCH_RESULTS: "5"
     ports:
       - "8080:8080"
     volumes:
       - ./:/app
+      - ./secrets:/app/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -18,6 +18,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.auth import hash_password, verify_password
 from app.classifier import MessageClassifier
+from app.cms_client import CMSClient
+from app.corrections import (
+    assess_email,
+    extract_cms_edit_link,
+    generate_correction,
+)
+from app.discord_cache import DiscordCachePopulator
 from app.fetcher import ArticleFetcher
 from app.gmail_client import GmailClient
 from app.remediation import RemediationEngine
@@ -67,6 +74,8 @@ article_fetcher = ArticleFetcher()
 remediation_engine = RemediationEngine()
 verification_agent = VerificationAgent()
 draft_stager = DraftStager(cms_base_url=cms_base_url)
+discord_cache = DiscordCachePopulator()
+cms_client = CMSClient()
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -186,86 +195,73 @@ PIPELINE_STEPS: list[dict[str, Any]] = [
     {
         "id": "gmail_intake",
         "label": "3.1 Gmail intake",
-        "description": "Fetch from Gmail API (delegated service account) or submit manual test input.",
+        "description": "Fetch emails from Gmail API (batch) or submit manual test input. In gmail_api mode, fetches up to max_results emails.",
         "inputs": [
-            {"key": "mode", "label": "Mode: manual or gmail_api", "type": "text", "required": False},
+            {"key": "mode", "label": "Mode: manual or gmail_api", "type": "text", "required": False, "default": "gmail_api"},
             {"key": "sender", "label": "Sender email (manual mode)", "type": "text", "required": False},
             {"key": "subject", "label": "Email subject (manual mode)", "type": "text", "required": False},
             {"key": "body", "label": "Email body (manual mode)", "type": "textarea", "required": False},
-            {"key": "gmail_message_id", "label": "Gmail message ID (gmail_api mode, optional)", "type": "text", "required": False},
-            {"key": "gmail_query", "label": "Gmail search query (gmail_api mode)", "type": "text", "required": False},
+            {"key": "gmail_message_id", "label": "Gmail message ID (optional, fetches one specific email)", "type": "text", "required": False},
+            {"key": "gmail_query", "label": "Gmail search query", "type": "text", "required": False, "default": "label:auto/correction-candidate is:unread"},
             {"key": "gmail_label_ids", "label": "Gmail label IDs, comma-separated", "type": "text", "required": False},
-            {"key": "max_results", "label": "Max results when querying", "type": "text", "required": False},
+            {"key": "max_results", "label": "Number of emails to fetch (1-10)", "type": "text", "required": False, "default": "5"},
         ],
     },
     {
         "id": "classifier",
         "label": "3.2 Classifier",
-        "description": "Classify correction intent with Claude (or rules fallback) and return structured fields.",
+        "description": "Classify each email for correction intent with Claude (or rules fallback). Processes all cases from intake.",
         "inputs": [
             {"key": "backend", "label": "Backend override: auto | claude | rules", "type": "text", "required": False},
-            {"key": "sender", "label": "Sender override (optional)", "type": "text", "required": False},
-            {"key": "subject", "label": "Subject override (optional)", "type": "text", "required": False},
-            {"key": "body", "label": "Body override (optional)", "type": "textarea", "required": False},
         ],
     },
     {
         "id": "resolver",
         "label": "3.3 Article resolver",
-        "description": "Resolve article URL from direct link or cached editorial posts (with optional seed input).",
+        "description": "Resolve article URL for each case from Discord editorial cache or direct link.",
         "inputs": [
-            {"key": "article_hint", "label": "Article hint or URL", "type": "text", "required": True},
-            {"key": "seed_title", "label": "Seed editorial title (optional)", "type": "text", "required": False},
-            {"key": "seed_article_url", "label": "Seed editorial article URL (optional)", "type": "text", "required": False},
-            {"key": "seed_cms_edit_url", "label": "Seed editorial CMS edit URL (optional)", "type": "text", "required": False},
-            {"key": "seed_content", "label": "Seed editorial message content (optional)", "type": "textarea", "required": False},
-            {"key": "seed_channel", "label": "Seed editorial channel (optional)", "type": "text", "required": False},
-            {"key": "seed_message_id", "label": "Seed editorial message ID (optional)", "type": "text", "required": False},
+            {"key": "article_hint", "label": "Article hint override (single-case only)", "type": "text", "required": False},
         ],
     },
     {
         "id": "fetcher",
         "label": "3.4 Article fetcher",
-        "description": "Fetch and parse public article metadata, outbound links, and existing correction notes.",
+        "description": "Fetch and parse each resolved article's metadata, outbound links, and existing notes.",
         "inputs": [
-            {"key": "article_url", "label": "Article URL", "type": "text", "required": True},
-            {"key": "article_edit_url", "label": "CMS edit URL override (optional)", "type": "text", "required": False},
+            {"key": "article_url", "label": "Article URL override (single-case only)", "type": "text", "required": False},
         ],
     },
     {
         "id": "verification",
         "label": "3.5 Verification agent",
-        "description": "Evaluate evidence and return confidence + recommended action.",
+        "description": "Fact-check each case's claim. Returns confidence score and recommended action.",
         "inputs": [
-            {"key": "specific_claim", "label": "Specific claim to verify", "type": "textarea", "required": True},
+            {"key": "specific_claim", "label": "Specific claim override (single-case only)", "type": "textarea", "required": False},
         ],
     },
     {
         "id": "remediation",
         "label": "3.6 Remediation classifier + note writer",
-        "description": "Choose correction note type and draft neutral note text.",
+        "description": "Choose correction note type and draft neutral note text for each verified case.",
         "inputs": [
             {"key": "recommended_action", "label": "Recommended action override", "type": "text", "required": False},
-            {"key": "request_type", "label": "Request type override", "type": "text", "required": False},
-            {"key": "specific_claim", "label": "Specific claim override", "type": "textarea", "required": False},
-            {"key": "confidence", "label": "Confidence override (0-10)", "type": "text", "required": False},
         ],
     },
     {
         "id": "stager",
         "label": "3.7 Draft stager",
-        "description": "Prepare staged draft output, preview URL, and before/after summary.",
+        "description": "Prepare staged draft for each case using recommended edits from remediation.",
         "inputs": [
-            {"key": "target_field", "label": "Target field", "type": "text", "required": True},
-            {"key": "new_value", "label": "New value", "type": "textarea", "required": True},
+            {"key": "target_field", "label": "Target field override (single-case only)", "type": "text", "required": False},
+            {"key": "new_value", "label": "New value override (single-case only)", "type": "textarea", "required": False},
         ],
     },
     {
         "id": "review_dashboard",
         "label": "3.8 Review dashboard",
-        "description": "Finalize case packet for editor review and publish decision.",
+        "description": "Finalize all case packets for editor review.",
         "inputs": [
-            {"key": "reviewer", "label": "Reviewer name", "type": "text", "required": True},
+            {"key": "reviewer", "label": "Reviewer name", "type": "text", "required": False, "default": "auto"},
         ],
     },
 ]
@@ -410,21 +406,52 @@ def get_run_or_404(run_id: str) -> PipelineRunRecord:
     return run
 
 
+def _intake_keywords() -> list[str]:
+    return [
+        "correction", "error", "mistake", "inaccurate", "wrong",
+        "incorrect", "typo", "update", "editor's note", "retract",
+    ]
+
+
+def _make_intake_case(
+    *,
+    sender: str,
+    subject: str,
+    body: str,
+    source: str,
+    gmail_message_id: str | None = None,
+    gmail_thread_id: str | None = None,
+) -> dict[str, Any]:
+    text = f"{subject}\n{body}".lower()
+    keywords = _intake_keywords()
+    matched = [kw for kw in keywords if kw in text]
+    return {
+        "case_id": f"case-{uuid4().hex[:8]}",
+        "source": source,
+        "is_candidate": bool(matched),
+        "matched_keywords": matched,
+        "labels_applied": ["auto/correction-candidate", "auto/processed"],
+        "gmail_message_id": gmail_message_id,
+        "gmail_thread_id": gmail_thread_id,
+        "sender": sender,
+        "subject": subject,
+        "body": body,
+    }
+
+
 def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    # ── batch-aware: all steps read/write context["cases"] ──
+    cases: list[dict[str, Any]] = context.get("cases", [])
+
     if step_id == "gmail_intake":
         mode = (inputs.get("mode") or "manual").strip().lower()
         if mode not in {"manual", "gmail_api"}:
             raise HTTPException(status_code=400, detail="mode must be 'manual' or 'gmail_api'")
 
-        sender = ""
-        subject = ""
-        body = ""
-        gmail_message_id = None
-        gmail_thread_id = None
-        source = mode
+        new_cases: list[dict[str, Any]] = []
 
         if mode == "gmail_api":
-            max_results_raw = (inputs.get("max_results") or "1").strip()
+            max_results_raw = (inputs.get("max_results") or "5").strip()
             try:
                 max_results = int(max_results_raw)
             except ValueError as exc:
@@ -432,7 +459,7 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
 
             label_ids = parse_label_ids(inputs.get("gmail_label_ids", ""))
             try:
-                fetched = gmail_client.fetch_intake_message(
+                fetched_list = gmail_client.fetch_intake_messages(
                     message_id=(inputs.get("gmail_message_id") or "").strip() or None,
                     query=(inputs.get("gmail_query") or "").strip() or None,
                     label_ids=label_ids,
@@ -441,61 +468,58 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-            sender = fetched.get("sender", "")
-            subject = fetched.get("subject", "")
-            body = fetched.get("body", "")
-            gmail_message_id = fetched.get("gmail_message_id")
-            gmail_thread_id = fetched.get("gmail_thread_id")
+            for fetched in fetched_list:
+                new_cases.append(_make_intake_case(
+                    sender=fetched.get("sender", ""),
+                    subject=fetched.get("subject", ""),
+                    body=fetched.get("body", ""),
+                    source="gmail_api",
+                    gmail_message_id=fetched.get("gmail_message_id"),
+                    gmail_thread_id=fetched.get("gmail_thread_id"),
+                ))
         else:
             sender = (inputs.get("sender") or "").strip()
             subject = (inputs.get("subject") or "").strip()
             body = (inputs.get("body") or "").strip()
             if not sender or not subject or not body:
-                raise HTTPException(
-                    status_code=400,
-                    detail="manual mode requires sender, subject, and body",
-                )
+                raise HTTPException(status_code=400, detail="manual mode requires sender, subject, and body")
+            new_cases.append(_make_intake_case(
+                sender=sender, subject=subject, body=body, source="manual",
+            ))
 
-        text = f"{subject}\n{body}".lower()
-        keywords = [
-            "correction",
-            "error",
-            "mistake",
-            "inaccurate",
-            "wrong",
-            "incorrect",
-            "typo",
-            "update",
-            "editor's note",
-            "retract",
-        ]
-        matched = [keyword for keyword in keywords if keyword in text]
-        case_id = f"case-{uuid4().hex[:8]}"
-        output = {
-            "case_id": case_id,
-            "source": source,
-            "is_candidate": bool(matched),
-            "matched_keywords": matched,
-            "labels_applied": ["auto/correction-candidate", "auto/processed"],
-            "gmail_message_id": gmail_message_id,
-            "gmail_thread_id": gmail_thread_id,
-            "sender": sender,
-            "subject": subject,
-            "body": body,
-        }
-        context.update(output)
-        return output
+        context["cases"] = new_cases
+        # Keep backward compat: first case also in top-level context
+        first = new_cases[0]
+        context.update(first)
+        return {"cases": new_cases, "total": len(new_cases), **first}
 
     if step_id == "classifier":
+        backend_override = (inputs.get("backend") or "").strip().lower() or None
+
+        if cases:
+            for case in cases:
+                sender = case.get("sender", "")
+                subject = case.get("subject", "")
+                body = case.get("body", "")
+                try:
+                    result = message_classifier.classify(
+                        sender=sender, subject=subject, body=body,
+                        backend_override=backend_override,
+                    )
+                except ValueError as exc:
+                    result = {"classifier_error": str(exc)}
+                case.update(result)
+            context["cases"] = cases
+            context.update(cases[0])
+            return {"cases": cases, "total": len(cases)}
+
+        # single-case fallback
         sender = (inputs.get("sender") or context.get("sender") or "").strip()
         subject = inputs.get("subject") or context.get("subject", "")
         body = inputs.get("body") or context.get("body", "")
-        backend_override = (inputs.get("backend") or "").strip().lower() or None
         try:
             output = message_classifier.classify(
-                sender=sender,
-                subject=subject,
-                body=body,
+                sender=sender, subject=subject, body=body,
                 backend_override=backend_override,
             )
         except ValueError as exc:
@@ -507,6 +531,28 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
         return output
 
     if step_id == "resolver":
+        if cases:
+            for case in cases:
+                hint = case.get("referenced_article_hint") or ""
+                if not hint:
+                    case["resolver_strategy"] = "skipped"
+                    case["resolver_confidence"] = 0
+                    case["needs_human"] = True
+                    continue
+                try:
+                    result = article_resolver.resolve(
+                        article_hint=hint,
+                        classifier_hint=hint,
+                        seed_editorial_post=None,
+                    )
+                except ValueError:
+                    result = {"resolver_strategy": "error", "resolver_confidence": 0, "needs_human": True}
+                case.update(result)
+            context["cases"] = cases
+            context.update(cases[0])
+            return {"cases": cases, "total": len(cases)}
+
+        # single-case fallback
         hint = inputs.get("article_hint") or context.get("referenced_article_hint") or ""
         seed_payload = {
             "title": inputs.get("seed_title"),
@@ -528,6 +574,22 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
         return output
 
     if step_id == "fetcher":
+        if cases:
+            for case in cases:
+                article_url = case.get("article_url")
+                if not article_url:
+                    case["snapshot_status"] = "skipped"
+                    continue
+                article_edit_url = (case.get("article_edit_url") or "").strip() or None
+                try:
+                    result = article_fetcher.fetch(article_url=article_url, article_edit_url=article_edit_url)
+                except Exception as exc:
+                    result = {"snapshot_status": "error", "fetch_error": str(exc)}
+                case.update(result)
+            context["cases"] = cases
+            context.update(cases[0])
+            return {"cases": cases, "total": len(cases)}
+
         article_url = inputs.get("article_url") or context.get("article_url")
         if not article_url:
             raise HTTPException(status_code=400, detail="article_url is required")
@@ -542,13 +604,34 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
         return output
 
     if step_id == "verification":
+        if cases:
+            for case in cases:
+                claim = case.get("specific_claim") or ""
+                if not claim:
+                    case["verification_status"] = "skipped"
+                    continue
+                try:
+                    result = verification_agent.verify(
+                        specific_claim=claim,
+                        proposed_correction=case.get("proposed_correction") or "",
+                        article_body=case.get("meta_description") or "",
+                        outbound_links=case.get("outbound_links") or [],
+                        request_type=case.get("request_type") or "other",
+                        headline=case.get("headline") or "",
+                    )
+                except Exception as exc:
+                    result = {"verification_status": "error", "verification_error": str(exc)}
+                case.update(result)
+            context["cases"] = cases
+            context.update(cases[0])
+            return {"cases": cases, "total": len(cases)}
+
         claim = inputs.get("specific_claim") or context.get("specific_claim") or ""
         proposed = inputs.get("proposed_correction") or context.get("proposed_correction") or ""
         article_body = context.get("meta_description") or ""
         outbound_links = context.get("outbound_links") or []
         request_type = context.get("request_type") or "other"
         headline = context.get("headline") or ""
-
         try:
             output = verification_agent.verify(
                 specific_claim=claim,
@@ -560,15 +643,42 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Verification failed: {exc}") from exc
-
         context.update(output)
         return output
 
     if step_id == "remediation":
+        if cases:
+            for case in cases:
+                claim = str(case.get("specific_claim") or "").strip()
+                if not claim:
+                    case["remediation_status"] = "skipped"
+                    continue
+                request_type = str(case.get("request_type") or "other").strip().lower()
+                recommended_action = str(case.get("recommended_action") or "").strip().lower() or None
+                confidence_val: int | None = None
+                raw_conf = case.get("confidence")
+                if raw_conf is not None:
+                    try:
+                        confidence_val = int(str(raw_conf).strip())
+                    except (ValueError, TypeError):
+                        confidence_val = None
+                try:
+                    result = remediation_engine.classify_and_write(
+                        specific_claim=claim,
+                        request_type=request_type,
+                        confidence=confidence_val,
+                        recommended_action=recommended_action,
+                    )
+                except Exception as exc:
+                    result = {"remediation_status": "error", "remediation_error": str(exc)}
+                case.update(result)
+            context["cases"] = cases
+            context.update(cases[0])
+            return {"cases": cases, "total": len(cases)}
+
         specific_claim = str(inputs.get("specific_claim") or context.get("specific_claim") or "").strip()
         request_type = str(inputs.get("request_type") or context.get("request_type") or "other").strip().lower()
         recommended_action = str(inputs.get("recommended_action") or context.get("recommended_action") or "").strip().lower() or None
-
         confidence_raw = inputs.get("confidence", context.get("confidence"))
         confidence_value: int | None = None
         if confidence_raw is not None and str(confidence_raw).strip():
@@ -578,7 +688,6 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
                 raise HTTPException(status_code=400, detail="confidence must be an integer") from exc
             if confidence_value < 0 or confidence_value > 10:
                 raise HTTPException(status_code=400, detail="confidence must be between 0 and 10")
-
         try:
             output = remediation_engine.classify_and_write(
                 specific_claim=specific_claim,
@@ -590,11 +699,61 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Remediation failed: {exc}") from exc
-
         context.update(output)
         return output
 
     if step_id == "stager":
+        if cases:
+            for case in cases:
+                suggested_note = str(case.get("suggested_note_text") or "").strip()
+                selected_action = str(case.get("selected_action") or "").strip()
+                recommended_edit = case.get("recommended_edit") or {}
+
+                target_field = ""
+                new_value = ""
+                if isinstance(recommended_edit, dict) and recommended_edit.get("field"):
+                    target_field = str(recommended_edit["field"]).strip().lower()
+                    new_value = str(recommended_edit.get("new_value") or "").strip()
+
+                if not target_field and suggested_note:
+                    target_field = "body"
+                    new_value = suggested_note
+
+                if not target_field or not new_value:
+                    case["stager_status"] = "skipped"
+                    continue
+
+                current_value = ""
+                if target_field == "title":
+                    current_value = str(case.get("headline") or "").strip()
+                elif target_field in {"body", "meta_description"}:
+                    current_value = str(case.get("meta_description") or "").strip()
+
+                article_cms_id = case.get("article_cms_id")
+                if article_cms_id is not None:
+                    try:
+                        article_cms_id = int(article_cms_id)
+                    except (TypeError, ValueError):
+                        article_cms_id = None
+
+                try:
+                    result = draft_stager.stage(
+                        article_cms_id=article_cms_id,
+                        article_url=str(case.get("article_url") or ""),
+                        article_edit_url=str(case.get("article_edit_url") or "").strip() or None,
+                        target_field=target_field,
+                        new_value=new_value,
+                        current_value=current_value,
+                        suggested_note_text=suggested_note or None,
+                        selected_action=selected_action or None,
+                    )
+                except Exception as exc:
+                    result = {"stager_status": "error", "stager_error": str(exc)}
+                case.update(result)
+            context["cases"] = cases
+            context.update(cases[0])
+            return {"cases": cases, "total": len(cases)}
+
         target_field = str(inputs.get("target_field") or "").strip().lower()
         new_value = str(inputs.get("new_value") or "").strip()
         if not target_field:
@@ -633,12 +792,32 @@ def execute_step(context: dict[str, Any], step_id: str, inputs: dict[str, Any]) 
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Stager failed: {exc}") from exc
-
         context.update(output)
         return output
 
     if step_id == "review_dashboard":
-        reviewer = inputs.get("reviewer")
+        reviewer = inputs.get("reviewer") or "auto"
+
+        if cases:
+            for case in cases:
+                case["reviewer"] = reviewer
+                case["status"] = "ready_for_editor_approval"
+                case["case_packet_ready"] = True
+            context["cases"] = cases
+            context.update(cases[0])
+            return {
+                "cases": cases,
+                "total": len(cases),
+                "reviewer": reviewer,
+                "status": "ready_for_editor_approval",
+                "actions_available": [
+                    "Approve & publish", "Edit note then publish",
+                    "Reject", "Send back for re-verification",
+                    "Escalate to Eddie",
+                ],
+                "case_packet_ready": True,
+            }
+
         output = {
             "reviewer": reviewer,
             "status": "ready_for_editor_approval",
@@ -661,6 +840,11 @@ def validate_required_inputs(run: PipelineRunRecord, step: dict[str, Any], input
     # gmail_intake has conditional required fields, validated in execute_step.
     if step["id"] == "gmail_intake":
         return
+
+    # Batch steps (cases in context) don't require manual inputs — data flows from prior step.
+    if run.context.get("cases"):
+        return
+
     if step["id"] == "classifier":
         subject = (inputs.get("subject") or run.context.get("subject") or "").strip()
         body = (inputs.get("body") or run.context.get("body") or "").strip()
@@ -733,6 +917,191 @@ async def review_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/corrections", response_class=HTMLResponse)
+async def corrections_page(request: Request) -> HTMLResponse:
+    user = page_user_or_redirect(request, "/corrections")
+    if isinstance(user, RedirectResponse):
+        return user
+    if user["role"] not in ADMIN_ROLES:
+        return RedirectResponse(url="/", status_code=302)
+
+    return templates.TemplateResponse(
+        "corrections.html",
+        render_context(request),
+    )
+
+
+class CorrectionAssessRequest(BaseModel):
+    sender_name: str = ""
+    sender_email: str = ""
+    subject: str = ""
+    body: str = ""
+
+
+class DiscordParseRequest(BaseModel):
+    message: str = ""
+
+
+class CorrectionGenerateRequest(BaseModel):
+    sender_name: str = ""
+    sender_email: str = ""
+    subject: str = ""
+    body: str = ""
+    title: str = ""
+    meta_description: str = ""
+    meta_title: str = ""
+    excerpt: str = ""
+    article_body: str = ""
+    featured_image_attribution: str = ""
+    image_url: str = ""
+
+
+def _parse_sender_email(raw: str) -> tuple[str, str]:
+    """Split 'Name <addr@x>' into (name, email). Either half may be empty."""
+    raw = (raw or "").strip()
+    if not raw:
+        return "", ""
+    match = re.match(r"^(.*?)(?:\s*<([^>]+)>)\s*$", raw)
+    if match:
+        name = match.group(1).strip().strip('"')
+        email = match.group(2).strip()
+        return name, email
+    if "@" in raw:
+        return "", raw
+    return raw, ""
+
+
+@app.get("/api/corrections/inbox")
+async def api_corrections_inbox(request: Request, limit: int = 5) -> JSONResponse:
+    ensure_admin_api(request)
+
+    if limit not in (1, 5, 50):
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be 1, 5, or 50",
+        )
+
+    if not gmail_client.configured:
+        raise HTTPException(
+            status_code=400,
+            detail="Gmail API is not configured. Set GMAIL_DELEGATED_USER plus GMAIL_SERVICE_ACCOUNT_FILE or GMAIL_SERVICE_ACCOUNT_JSON.",
+        )
+
+    query = os.getenv(
+        "CORRECTIONS_INBOX_QUERY",
+        "label:auto/correction-candidate is:unread",
+    )
+
+    try:
+        fetched = gmail_client.fetch_intake_messages(
+            query=query,
+            max_results=limit,
+        )
+    except ValueError as exc:
+        # "No Gmail messages matched" is a normal empty-queue case.
+        message = str(exc)
+        if message.startswith("No Gmail messages matched"):
+            return JSONResponse({"messages": [], "query": query})
+        raise HTTPException(status_code=400, detail=message) from exc
+
+    results: list[dict[str, Any]] = []
+    for msg in fetched:
+        name, email_addr = _parse_sender_email(msg.get("sender", ""))
+        internal_ms_raw = msg.get("internal_date_ms")
+        received_at: str | None = None
+        if internal_ms_raw is not None:
+            try:
+                received_at = datetime.fromtimestamp(
+                    int(internal_ms_raw) / 1000,
+                    tz=timezone.utc,
+                ).isoformat()
+            except (TypeError, ValueError):
+                received_at = None
+
+        results.append({
+            "gmail_message_id": msg.get("gmail_message_id", ""),
+            "gmail_thread_id": msg.get("gmail_thread_id", ""),
+            "sender_raw": msg.get("sender", ""),
+            "sender_name": name,
+            "sender_email": email_addr,
+            "subject": msg.get("subject", ""),
+            "snippet": msg.get("snippet", ""),
+            "body": msg.get("body", ""),
+            "received_at": received_at,
+        })
+
+    return JSONResponse({"messages": results, "query": query})
+
+
+@app.post("/api/corrections/assess")
+async def api_corrections_assess(
+    payload: CorrectionAssessRequest, request: Request
+) -> JSONResponse:
+    ensure_admin_api(request)
+    if not payload.subject.strip() and not payload.body.strip():
+        raise HTTPException(status_code=400, detail="subject or body is required")
+
+    try:
+        result = assess_email(
+            sender_name=payload.sender_name,
+            sender_email=payload.sender_email,
+            subject=payload.subject,
+            body=payload.body,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Assessment failed: {exc}") from exc
+
+    both_above_four = result["CRVS"] > 4 and result["SAS"] > 4
+    return JSONResponse({**result, "gate_passed": both_above_four})
+
+
+@app.post("/api/corrections/parse-discord")
+async def api_corrections_parse_discord(
+    payload: DiscordParseRequest, request: Request
+) -> JSONResponse:
+    ensure_admin_api(request)
+    if not payload.message.strip():
+        raise HTTPException(status_code=400, detail="message is required")
+
+    result = extract_cms_edit_link(payload.message)
+    return JSONResponse(result)
+
+
+@app.post("/api/corrections/generate")
+async def api_corrections_generate(
+    payload: CorrectionGenerateRequest, request: Request
+) -> JSONResponse:
+    ensure_admin_api(request)
+    if not payload.title.strip() and not payload.article_body.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="At least Title or Body is required to generate a correction",
+        )
+
+    try:
+        result = generate_correction(
+            sender_name=payload.sender_name,
+            sender_email=payload.sender_email,
+            subject=payload.subject,
+            body=payload.body,
+            title=payload.title,
+            meta_description=payload.meta_description,
+            meta_title=payload.meta_title,
+            excerpt=payload.excerpt,
+            article_body=payload.article_body,
+            featured_image_attribution=payload.featured_image_attribution,
+            image_url=payload.image_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Correction generation failed: {exc}") from exc
+
+    return JSONResponse(result)
+
+
 @app.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request) -> HTMLResponse:
     user = page_user_or_redirect(request, "/setup")
@@ -776,23 +1145,25 @@ def _run_setup_checks() -> list[dict[str, Any]]:
     else:
         checks.append({"id": "gmail", "ok": False, "detail": "Not configured. Gmail API mode won't work; manual email input still works."})
 
-    # 4. CMS stager credentials
-    cms_user = os.getenv("CMS_STAGER_USERNAME", "")
-    cms_pass = os.getenv("CMS_STAGER_APP_PASSWORD", "")
-    remote_writes = os.getenv("STAGER_ENABLE_REMOTE_WRITES", "false").strip().lower() == "true"
-    if cms_user and cms_pass and remote_writes:
-        checks.append({"id": "cms_stager", "ok": True, "detail": f"CMS writes enabled for user '{cms_user}'."})
-    elif cms_user and cms_pass:
-        checks.append({"id": "cms_stager", "ok": True, "detail": f"Credentials set for '{cms_user}', but STAGER_ENABLE_REMOTE_WRITES=false (dry-run mode)."})
+    # 4. Discord guild
+    discord_token = os.getenv("DISCORD_BOT_TOKEN", "")
+    discord_guild = os.getenv("DISCORD_GUILD_ID", "")
+    if discord_token and discord_guild:
+        checks.append({"id": "discord", "ok": True, "detail": f"Bot configured for guild {discord_guild}. Use POST /api/discord/refresh to populate article cache."})
+    elif discord_token:
+        checks.append({"id": "discord", "ok": False, "detail": "Bot token set but DISCORD_GUILD_ID is missing."})
     else:
-        checks.append({"id": "cms_stager", "ok": False, "detail": "No CMS credentials. Stager runs in dry-run mode only."})
+        checks.append({"id": "discord", "ok": False, "detail": "Not configured. Article resolver will rely on direct URLs or manual seeding."})
 
-    # 5. CMS fetcher cookie
-    cms_cookie = os.getenv("CMS_FETCHER_SESSION_COOKIE", "")
-    if cms_cookie:
-        checks.append({"id": "cms_fetcher", "ok": True, "detail": "Session cookie configured for CMS edit URL probing."})
+    # 5. CMS API
+    cms_api_url = os.getenv("CMS_API_BASE_URL", os.getenv("CMS_BASE_URL", ""))
+    cms_api_key = os.getenv("CMS_API_KEY", "")
+    if cms_api_url and cms_api_key:
+        checks.append({"id": "cms_api", "ok": True, "detail": f"CMS API configured at {cms_api_url} with API key."})
+    elif cms_api_url:
+        checks.append({"id": "cms_api", "ok": True, "detail": f"CMS API URL set ({cms_api_url}) but no API key. Auth may fail."})
     else:
-        checks.append({"id": "cms_fetcher", "ok": False, "detail": "No session cookie. CMS edit URL probing will show auth_required."})
+        checks.append({"id": "cms_api", "ok": False, "detail": "CMS API not configured. Article fetching and staging will not work."})
 
     # 6. Session secret
     secret = os.getenv("APP_SESSION_SECRET", "")
@@ -995,6 +1366,44 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/api/discord/refresh")
+async def api_discord_refresh(request: Request) -> JSONResponse:
+    """Scan all text channels in the Discord guild and cache article references."""
+    ensure_admin_api(request)
+    if not discord_cache.is_configured():
+        return JSONResponse(
+            {"status": "error", "message": "DISCORD_BOT_TOKEN or DISCORD_GUILD_ID not configured"},
+            status_code=400,
+        )
+    result = discord_cache.populate(storage)
+    return JSONResponse(result)
+
+
+@app.get("/api/cms/articles/{article_id}")
+async def api_cms_read_article(article_id: int, request: Request) -> JSONResponse:
+    """Read article fields from the Hoodline CMS API."""
+    ensure_admin_api(request)
+    try:
+        article = cms_client.read_article(article_id)
+        return JSONResponse(article)
+    except Exception as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=502)
+
+
+@app.patch("/api/cms/articles/{article_id}")
+async def api_cms_write_article(article_id: int, request: Request) -> JSONResponse:
+    """Write updated fields to an article via the Hoodline CMS API."""
+    ensure_admin_api(request)
+    body = await request.json()
+    try:
+        result = cms_client.write_article(article_id, body)
+        return JSONResponse(result)
+    except ValueError as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=502)
+
+
 @app.get("/api/pipeline/steps")
 async def api_steps(request: Request) -> JSONResponse:
     ensure_admin_api(request)
@@ -1046,90 +1455,93 @@ async def api_run_step(run_id: str, step_id: str, payload: StepExecutionRequest,
     output = execute_step(context, step_id, payload.inputs)
     append_run_log(run_id, step_id, "Step completed", {"output": output})
 
-    if step_id == "gmail_intake":
-        storage.save_gmail_intake_event(
-            run_id=run_id,
-            case_id=output["case_id"],
-            source=output["source"],
-            gmail_message_id=output.get("gmail_message_id"),
-            gmail_thread_id=output.get("gmail_thread_id"),
-            sender=output.get("sender", ""),
-            subject=output.get("subject", ""),
-            body=output.get("body", ""),
-            matched_keywords=output.get("matched_keywords", []),
-            is_candidate=bool(output.get("is_candidate")),
-        )
-    if step_id == "classifier":
-        storage.save_classifier_event(
-            run_id=run_id,
-            case_id=context.get("case_id"),
-            backend=output.get("classifier_backend", "unknown"),
-            model=output.get("classifier_model"),
-            sender=output.get("sender", ""),
-            subject=output.get("subject", ""),
-            body=output.get("body", ""),
-            output=output,
-        )
-    if step_id == "resolver":
-        storage.save_resolver_event(
-            run_id=run_id,
-            case_id=context.get("case_id"),
-            article_hint=payload.inputs.get("article_hint", ""),
-            strategy=output.get("resolver_strategy", "unknown"),
-            confidence=output.get("resolver_confidence"),
-            needs_human=bool(output.get("needs_human")),
-            output=output,
-        )
-    if step_id == "fetcher":
-        storage.save_fetcher_event(
-            run_id=run_id,
-            case_id=context.get("case_id"),
-            article_url=output.get("article_url", ""),
-            article_edit_url=output.get("article_edit_url"),
-            fetch_status=output.get("snapshot_status", "unknown"),
-            http_status=output.get("public_http_status"),
-            output=output,
-        )
-    if step_id == "verification":
-        storage.save_verification_event(
-            run_id=run_id,
-            case_id=context.get("case_id"),
-            confidence=output.get("confidence"),
-            recommended_action=output.get("recommended_action", "unknown"),
-            backend=output.get("verification_backend", "unknown"),
-            model=output.get("verification_model"),
-            link_checks=output.get("link_checks_performed", 0),
-            search_queries=output.get("search_queries_performed", 0),
-            output=output,
-        )
-    if step_id == "remediation":
-        storage.save_remediation_event(
-            run_id=run_id,
-            case_id=context.get("case_id"),
-            selected_action=output.get("selected_action", "unknown"),
-            error_category=output.get("error_category", "other"),
-            note_text=output.get("suggested_note_text", ""),
-            backend=output.get("note_writer_backend", "unknown"),
-            model=output.get("note_writer_model"),
-            output=output,
-        )
-    if step_id == "stager":
-        article_cms_id = context.get("article_cms_id")
-        if article_cms_id is not None:
-            try:
-                article_cms_id = int(article_cms_id)
-            except (TypeError, ValueError):
-                article_cms_id = None
-        storage.save_stager_event(
-            run_id=run_id,
-            case_id=context.get("case_id"),
-            article_cms_id=article_cms_id,
-            target_field=output.get("target_field", ""),
-            remote_applied=bool(output.get("remote_applied")),
-            remote_status=output.get("remote_status", "unknown"),
-            preview_url=output.get("preview_url", ""),
-            output=output,
-        )
+    # Save audit events — iterate cases if batch, else save single event
+    batch_cases = output.get("cases") or [output]
+    for case_data in batch_cases:
+        if step_id == "gmail_intake":
+            storage.save_gmail_intake_event(
+                run_id=run_id,
+                case_id=case_data.get("case_id", ""),
+                source=case_data.get("source", "unknown"),
+                gmail_message_id=case_data.get("gmail_message_id"),
+                gmail_thread_id=case_data.get("gmail_thread_id"),
+                sender=case_data.get("sender", ""),
+                subject=case_data.get("subject", ""),
+                body=case_data.get("body", ""),
+                matched_keywords=case_data.get("matched_keywords", []),
+                is_candidate=bool(case_data.get("is_candidate")),
+            )
+        if step_id == "classifier":
+            storage.save_classifier_event(
+                run_id=run_id,
+                case_id=case_data.get("case_id"),
+                backend=case_data.get("classifier_backend", "unknown"),
+                model=case_data.get("classifier_model"),
+                sender=case_data.get("sender", ""),
+                subject=case_data.get("subject", ""),
+                body=case_data.get("body", ""),
+                output=case_data,
+            )
+        if step_id == "resolver":
+            storage.save_resolver_event(
+                run_id=run_id,
+                case_id=case_data.get("case_id"),
+                article_hint=case_data.get("referenced_article_hint", ""),
+                strategy=case_data.get("resolver_strategy", "unknown"),
+                confidence=case_data.get("resolver_confidence"),
+                needs_human=bool(case_data.get("needs_human")),
+                output=case_data,
+            )
+        if step_id == "fetcher":
+            storage.save_fetcher_event(
+                run_id=run_id,
+                case_id=case_data.get("case_id"),
+                article_url=case_data.get("article_url", ""),
+                article_edit_url=case_data.get("article_edit_url"),
+                fetch_status=case_data.get("snapshot_status", "unknown"),
+                http_status=case_data.get("public_http_status"),
+                output=case_data,
+            )
+        if step_id == "verification":
+            storage.save_verification_event(
+                run_id=run_id,
+                case_id=case_data.get("case_id"),
+                confidence=case_data.get("confidence"),
+                recommended_action=case_data.get("recommended_action", "unknown"),
+                backend=case_data.get("verification_backend", "unknown"),
+                model=case_data.get("verification_model"),
+                link_checks=case_data.get("link_checks_performed", 0),
+                search_queries=case_data.get("search_queries_performed", 0),
+                output=case_data,
+            )
+        if step_id == "remediation":
+            storage.save_remediation_event(
+                run_id=run_id,
+                case_id=case_data.get("case_id"),
+                selected_action=case_data.get("selected_action", "unknown"),
+                error_category=case_data.get("error_category", "other"),
+                note_text=case_data.get("suggested_note_text", ""),
+                backend=case_data.get("note_writer_backend", "unknown"),
+                model=case_data.get("note_writer_model"),
+                output=case_data,
+            )
+        if step_id == "stager":
+            stager_cms_id = case_data.get("article_cms_id")
+            if stager_cms_id is not None:
+                try:
+                    stager_cms_id = int(stager_cms_id)
+                except (TypeError, ValueError):
+                    stager_cms_id = None
+            storage.save_stager_event(
+                run_id=run_id,
+                case_id=case_data.get("case_id"),
+                article_cms_id=stager_cms_id,
+                target_field=case_data.get("target_field", ""),
+                remote_applied=bool(case_data.get("remote_applied")),
+                remote_status=case_data.get("remote_status", "unknown"),
+                preview_url=case_data.get("preview_url", ""),
+                output=case_data,
+            )
 
     step_index = run.current_index
     storage.append_step_output(

@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
 .env
+secrets/
+*.json
 logs/*.log
 logs/runs/*.log

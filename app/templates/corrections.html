@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% block title %}Corrections Wizard | Hoodline Dashboard{% endblock %}
+{% block content %}
+<section class="panel hero">
+  <h1>Corrections Wizard</h1>
+  <p>
+    Walk a reader correction request through assessment, article lookup, and Claude-assisted revision —
+    one step at a time. Steps unlock as you complete the one above.
+  </p>
+</section>
+
+<section class="panel corrections-step" id="step-email" data-state="active">
+  <header class="corrections-step-head">
+    <span class="corrections-step-num">1</span>
+    <div>
+      <h2>Email details</h2>
+      <p class="muted">The inbound correction request. Name is optional; everything else helps.</p>
+    </div>
+    <span class="pill step-state">Pending</span>
+  </header>
+
+  <div class="inbox-picker" id="inbox-picker">
+    <div class="inbox-picker-head">
+      <div>
+        <h3>Pull from Gmail queue</h3>
+        <p class="muted">Unread messages on <code>contact@hoodline.com</code> labeled <code>auto/correction-candidate</code>.</p>
+      </div>
+      <div class="inbox-picker-controls">
+        <label class="inbox-limit">
+          <span>How many?</span>
+          <select id="inbox-limit">
+            <option value="1">Last 1</option>
+            <option value="5" selected>Last 5</option>
+            <option value="50">All (up to 50)</option>
+          </select>
+        </label>
+        <button type="button" class="btn ghost" id="inbox-fetch-btn">Fetch queue</button>
+      </div>
+    </div>
+    <p class="muted inbox-status" id="inbox-status"></p>
+    <ul class="inbox-list" id="inbox-list" hidden></ul>
+  </div>
+
+  <div class="form-divider"><span>or enter manually</span></div>
+
+  <form id="email-form" class="corrections-form">
+    <label class="field">
+      <span>Sender name <span class="muted">(optional)</span></span>
+      <input type="text" name="sender_name" autocomplete="off" />
+    </label>
+    <label class="field">
+      <span>Sender email address</span>
+      <input type="email" name="sender_email" autocomplete="off" />
+    </label>
+    <label class="field">
+      <span>Subject line</span>
+      <input type="text" name="subject" autocomplete="off" />
+    </label>
+    <label class="field">
+      <span>Email body</span>
+      <textarea name="body" rows="8"></textarea>
+    </label>
+    <div class="corrections-actions">
+      <button type="submit" class="btn btn-accent">Assess validity &amp; authority</button>
+      <span class="muted" id="assess-status"></span>
+    </div>
+  </form>
+
+  <div class="corrections-result" id="assess-result" hidden>
+    <div class="score-grid">
+      <div class="score-card">
+        <span class="score-label">Correction Request Validity Score</span>
+        <span class="score-value" id="score-crvs">–</span>
+        <div class="meter"><div class="meter-fill" id="meter-crvs"></div></div>
+        <p class="muted" id="reason-crvs"></p>
+      </div>
+      <div class="score-card">
+        <span class="score-label">Sender's Authority Score</span>
+        <span class="score-value" id="score-sas">–</span>
+        <div class="meter"><div class="meter-fill" id="meter-sas"></div></div>
+        <p class="muted" id="reason-sas"></p>
+      </div>
+    </div>
+    <div id="gate-verdict" class="gate-verdict"></div>
+  </div>
+</section>
+
+<section class="panel corrections-step" id="step-discord" data-state="locked">
+  <header class="corrections-step-head">
+    <span class="corrections-step-num">2</span>
+    <div>
+      <h2>Paste Discord message</h2>
+      <p class="muted">Paste the editorial Discord message that contains the CMS edit link for this article.</p>
+    </div>
+    <span class="pill step-state">Locked</span>
+  </header>
+
+  <form id="discord-form" class="corrections-form">
+    <label class="field">
+      <span>Discord message content</span>
+      <textarea name="message" rows="5" placeholder="Paste the editor post here — we'll find the hoodline.impress3.com edit URL."></textarea>
+    </label>
+    <div class="corrections-actions">
+      <button type="submit" class="btn">Find CMS edit link</button>
+      <span class="muted" id="discord-status"></span>
+    </div>
+  </form>
+
+  <div class="corrections-result" id="discord-result" hidden>
+    <div class="result-row">
+      <span class="result-label">Article ID:</span>
+      <code id="article-id">—</code>
+    </div>
+    <div class="result-row">
+      <span class="result-label">Edit URL:</span>
+      <a id="edit-url-link" href="#" target="_blank" rel="noreferrer" class="mono">—</a>
+    </div>
+  </div>
+</section>
+
+<section class="panel corrections-step" id="step-cms" data-state="locked">
+  <header class="corrections-step-head">
+    <span class="corrections-step-num">3</span>
+    <div>
+      <h2>Open the CMS, then fill in the article fields</h2>
+      <p class="muted">Log into the Hoodline CMS in a new tab, open the edit link, then paste each field below.</p>
+    </div>
+    <span class="pill step-state">Locked</span>
+  </header>
+
+  <div class="corrections-actions cms-actions">
+    <a id="cms-login-btn" class="btn ghost" href="{{ cms_base_url }}" target="_blank" rel="noreferrer">
+      Open CMS login →
+    </a>
+    <a id="cms-edit-btn" class="btn" href="#" target="_blank" rel="noreferrer" aria-disabled="true">
+      Open edit link →
+    </a>
+  </div>
+
+  <form id="cms-form" class="corrections-form cms-form">
+    <label class="field">
+      <span>Title</span>
+      <input type="text" name="title" />
+    </label>
+    <label class="field">
+      <span>Meta Title</span>
+      <input type="text" name="meta_title" />
+    </label>
+    <label class="field">
+      <span>Meta Description</span>
+      <textarea name="meta_description" rows="2"></textarea>
+    </label>
+    <label class="field">
+      <span>Excerpt</span>
+      <textarea name="excerpt" rows="3"></textarea>
+    </label>
+    <label class="field">
+      <span>Body (HTML fragment)</span>
+      <textarea name="article_body" rows="10" class="mono"></textarea>
+    </label>
+    <label class="field">
+      <span>Featured Image Attribution</span>
+      <input type="text" name="featured_image_attribution" />
+    </label>
+    <label class="field">
+      <span>Image URL</span>
+      <input type="url" name="image_url" />
+    </label>
+    <div class="corrections-actions">
+      <button type="submit" class="btn btn-accent">Send to Claude with web search</button>
+      <span class="muted" id="generate-status"></span>
+    </div>
+  </form>
+</section>
+
+<section class="panel corrections-step" id="step-result" data-state="locked">
+  <header class="corrections-step-head">
+    <span class="corrections-step-num">4</span>
+    <div>
+      <h2>Correction proposal</h2>
+      <p class="muted">Claude's proposed edits — copy whichever fields you want to apply in the CMS.</p>
+    </div>
+    <span class="pill step-state">Locked</span>
+  </header>
+
+  <div id="generate-summary" class="corrections-summary" hidden></div>
+
+  <div id="generate-fields" class="corrections-fields" hidden></div>
+
+  <details class="corrections-raw" id="generate-raw-wrap" hidden>
+    <summary>Raw JSON</summary>
+    <div class="row-between">
+      <span class="muted">Full response from Claude</span>
+      <button type="button" class="btn ghost" id="copy-raw-btn">Copy JSON</button>
+    </div>
+    <pre id="generate-raw" class="output-view mono"></pre>
+  </details>
+</section>
+
+<template id="inbox-item-template">
+  <li class="inbox-item">
+    <button type="button" class="inbox-item-btn">
+      <div class="inbox-item-head">
+        <span class="inbox-item-subject"></span>
+        <span class="inbox-item-date muted"></span>
+      </div>
+      <div class="inbox-item-sender muted"></div>
+      <div class="inbox-item-snippet"></div>
+    </button>
+  </li>
+</template>
+
+<template id="field-card-template">
+  <article class="field-card">
+    <header class="row-between">
+      <h3 class="field-card-title"></h3>
+      <button type="button" class="btn ghost field-card-copy">Copy</button>
+    </header>
+    <pre class="field-card-value mono"></pre>
+  </article>
+</template>
+
+<script src="/static/corrections.js"></script>
+{% endblock %}
