@@ -45,14 +45,23 @@ Scoring rules:
   in the 6-7 range.
 
 Also extract, if present in the email (otherwise empty string):
-{
-  "article_url": string   // a hoodline.com URL to the article, or ""
-  "article_title": string // the article's title as the sender quotes it,
-                          // or the title they appear to be describing.
-                          // Prefer exact quoted title; fall back to a
-                          // close paraphrase only if a clear title mention
-                          // is implied. Otherwise "".
-}
+- "article_url": a hoodline.com URL to the article, or "".
+- "article_title": the article's title as the sender quotes it, or the
+  title they appear to be describing. Prefer exact quoted title; fall
+  back to a close paraphrase only if a clear title mention is implied.
+  Otherwise "".
+
+Also classify whether the request is ONLY about the article's image
+(e.g., wrong photo, someone else's likeness, copyright on the photo,
+caption error about the image, request to swap or remove the photo) and
+NOT asking to change any text in the article itself. If the sender
+wants BOTH an image change AND any textual change, image_only must be
+false.
+
+- "image_only": 1 if the request is exclusively about the image, else 0.
+- "image_request_summary": if image_only is 1, one or two neutral
+  sentences restating specifically what the sender said about the image
+  (what is wrong, what they want changed). If image_only is 0, "".
 
 Your full output must be a single JSON object:
 {
@@ -61,7 +70,9 @@ Your full output must be a single JSON object:
   "crvs_reasoning": string,
   "sas_reasoning": string,
   "article_url": string,
-  "article_title": string
+  "article_title": string,
+  "image_only": 0 or 1,
+  "image_request_summary": string
 }
 """.strip()
 
@@ -226,6 +237,20 @@ def assess_email(
     sas = _clamp_int(parsed.get("SAS"))
     article_url_hint = str(parsed.get("article_url") or "").strip()
     article_title_hint = str(parsed.get("article_title") or "").strip()
+
+    raw_image_only = parsed.get("image_only")
+    image_only = False
+    if isinstance(raw_image_only, bool):
+        image_only = raw_image_only
+    elif isinstance(raw_image_only, (int, float)):
+        image_only = int(raw_image_only) == 1
+    elif isinstance(raw_image_only, str):
+        image_only = raw_image_only.strip().lower() in {"1", "true", "yes"}
+
+    image_request_summary = str(parsed.get("image_request_summary") or "").strip()
+    if not image_only:
+        image_request_summary = ""
+
     return {
         "CRVS": crvs,
         "SAS": sas,
@@ -233,6 +258,8 @@ def assess_email(
         "sas_reasoning": str(parsed.get("sas_reasoning") or "").strip(),
         "article_url_hint": article_url_hint,
         "article_title_hint": article_title_hint,
+        "image_only": image_only,
+        "image_request_summary": image_request_summary,
         "model": model,
         "raw": parsed,
     }

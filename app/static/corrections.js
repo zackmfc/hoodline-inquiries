@@ -261,8 +261,23 @@
       reasonSAS.textContent = res.sas_reasoning || "";
       assessResult.hidden = false;
 
-      gateVerdict.classList.remove("gate-pass", "gate-fail");
-      if (res.gate_passed) {
+      gateVerdict.classList.remove("gate-pass", "gate-fail", "gate-image-only");
+      if (res.gate_passed && res.image_only) {
+        // Short-circuit: image-only request → skip the rest of the wizard.
+        gateVerdict.classList.add("gate-image-only");
+        const summary = (res.image_request_summary || "").trim();
+        gateVerdict.innerHTML =
+          `<p class="gate-verdict-heading"><strong>Image-only request — stop here.</strong></p>` +
+          `<p>This request is only about the article's image, so no Discord lookup or Claude web-search run is needed. Route it to whoever handles image corrections.</p>` +
+          (summary
+            ? `<p class="gate-verdict-detail"><strong>What the sender said about the image:</strong> ${escapeHtml(summary)}</p>`
+            : "");
+        setStepState(steps.email, "done");
+        lockStep(steps.discord);
+        lockStep(steps.cms);
+        lockStep(steps.result);
+        setStatus(assessStatus, "Image-only — no further steps required.", "ok");
+      } else if (res.gate_passed) {
         gateVerdict.classList.add("gate-pass");
         const hintBits = [];
         if (res.article_url_hint) hintBits.push(`URL: ${res.article_url_hint}`);
