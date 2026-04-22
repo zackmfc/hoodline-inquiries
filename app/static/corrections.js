@@ -452,7 +452,7 @@
 
     setStatus(
       generateStatus,
-      "Sending to Claude with web search… this may take 30-90s.",
+      "Scraping outbound article links via Decodo, then calling Claude with web search… this may take 60-180s.",
       "info"
     );
     generateFields.hidden = true;
@@ -507,6 +507,17 @@
         `<span class="pill">Web searches: ${res.web_search_requests}</span>`
       );
     }
+    const snapshots = Array.isArray(res.outbound_snapshots) ? res.outbound_snapshots : [];
+    if (snapshots.length > 0 || typeof res.outbound_links_found === "number") {
+      const redirected = snapshots.filter((s) => s && s.redirected).length;
+      const errored = snapshots.filter((s) => s && s.error).length;
+      const total = snapshots.length || res.outbound_links_found || 0;
+      const pillClass = redirected > 0 ? "status-late" : "";
+      let label = `Outbound sources: ${total}`;
+      if (redirected > 0) label += ` · ${redirected} redirected`;
+      if (errored > 0) label += ` · ${errored} failed`;
+      bits.push(`<span class="pill ${pillClass}">${label}</span>`);
+    }
     if (res.model) {
       bits.push(`<span class="pill mono">${res.model}</span>`);
     }
@@ -537,10 +548,42 @@
       changeListHtml = `<ul class="changes-list">${items.join("")}</ul>`;
     }
 
+    let snapshotListHtml = "";
+    if (snapshots.length > 0) {
+      const items = snapshots.map((s) => {
+        const req = escapeHtml(s.requested_url || "");
+        const fin = escapeHtml(s.final_url || s.requested_url || "");
+        const redirectedBadge = s.redirected
+          ? ` <span class="pill status-late">redirected</span>`
+          : "";
+        const errorBadge = s.error
+          ? ` <span class="pill status-late">fetch failed</span>`
+          : "";
+        const finalLine =
+          s.redirected && s.final_url && s.final_url !== s.requested_url
+            ? `<div class="snapshot-final">→ <a href="${fin}" target="_blank" rel="noreferrer">${fin}</a></div>`
+            : "";
+        const titleLine = s.title
+          ? `<div class="snapshot-title">${escapeHtml(s.title)}</div>`
+          : "";
+        return (
+          `<li class="snapshot-item${s.redirected ? " is-redirected" : ""}">` +
+          `<div class="snapshot-head"><a href="${req}" target="_blank" rel="noreferrer" class="mono">${req}</a>${redirectedBadge}${errorBadge}</div>` +
+          finalLine +
+          titleLine +
+          `</li>`
+        );
+      });
+      snapshotListHtml =
+        `<details class="snapshot-wrap"><summary>Outbound sources sent to Claude (${snapshots.length})</summary>` +
+        `<ul class="snapshot-list">${items.join("")}</ul></details>`;
+    }
+
     generateSummary.innerHTML = `
       <p class="summary-line"><strong>${escapeHtml(verdict)}</strong></p>
       <div class="summary-pills">${bits.join("")}</div>
       ${changeListHtml}
+      ${snapshotListHtml}
     `;
     generateSummary.hidden = false;
 

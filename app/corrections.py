@@ -15,9 +15,13 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import requests
+from bs4 import BeautifulSoup
+
+from app.decodo_client import DecodoClient
 
 logger = logging.getLogger("hoodline.corrections")
 
@@ -257,6 +261,117 @@ def extract_cms_edit_link(discord_message: str) -> dict[str, Any]:
     }
 
 
+def _extract_outbound_links(article_body_html: str) -> list[str]:
+    """Return unique external anchor hrefs from the article body HTML.
+
+    Skips hoodline.com / hoodline.impress3.com (same context, not external
+    evidence) and obvious non-HTTP(S) schemes. Preserves original order
+    so that the first few links (usually the most important sources) get
+    fetched first when we cap the list.
+    """
+    if not article_body_html:
+        return []
+
+    soup = BeautifulSoup(article_body_html, "html.parser")
+    urls: list[str] = []
+    seen: set[str] = set()
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"].strip()
+        if not href.startswith(("http://", "https://")):
+            continue
+        lower = href.lower()
+        if "hoodline.com" in lower or "hoodline.impress3.com" in lower:
+            continue
+        cleaned = href.rstrip(".,)\"'>")
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        urls.append(cleaned)
+    return urls
+
+
+def _fetch_outbound_snapshots(
+    decodo: DecodoClient,
+    links: list[str],
+    *,
+    max_links: int,
+    max_chars: int,
+    max_workers: int = 4,
+) -> list[dict[str, Any]]:
+    """Scrape the first N outbound links concurrently via Decodo."""
+    if not links or not decodo.is_configured():
+        return []
+
+    bounded = links[:max_links]
+    snapshots: list[dict[str, Any] | None] = [None] * len(bounded)
+
+    def fetch(idx_url: tuple[int, str]) -> None:
+        idx, url = idx_url
+        try:
+            snap = decodo.scrape_page_text(url, max_chars=max_chars)
+        except Exception as exc:
+            logger.warning("outbound snapshot failed for %s: %s", url, exc)
+            snapshots[idx] = {
+                "requested_url": url,
+                "final_url": url,
+                "redirected": False,
+                "title": "",
+                "meta_description": "",
+                "text": "",
+                "error": str(exc)[:200],
+            }
+            return
+        snapshots[idx] = snap
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(bounded)))) as pool:
+        list(pool.map(fetch, list(enumerate(bounded))))
+
+    return [s for s in snapshots if s is not None]
+
+
+def _format_outbound_snapshots(snapshots: list[dict[str, Any]]) -> str:
+    if not snapshots:
+        return ""
+
+    chunks: list[str] = []
+    for i, snap in enumerate(snapshots, start=1):
+        requested = str(snap.get("requested_url") or "").strip()
+        final = str(snap.get("final_url") or requested).strip()
+        redirected = bool(snap.get("redirected"))
+        title = str(snap.get("title") or "").strip()
+        meta = str(snap.get("meta_description") or "").strip()
+        text = str(snap.get("text") or "").strip()
+        error = str(snap.get("error") or "").strip()
+
+        header_bits = [f"Source {i}: {requested}"]
+        if redirected and final and final != requested:
+            header_bits.append(f"(redirected to: {final})")
+        if error:
+            header_bits.append(f"[fetch error: {error}]")
+        header = "  ".join(header_bits)
+
+        body_lines = []
+        if title:
+            body_lines.append(f"Title: {title}")
+        if meta:
+            body_lines.append(f"Meta description: {meta}")
+        if text:
+            body_lines.append(f"Content: {text}")
+        if not body_lines and not error:
+            body_lines.append("(no readable content extracted)")
+
+        chunks.append(header + ("\n" + "\n".join(body_lines) if body_lines else ""))
+
+    return (
+        "**Outbound link snapshots** (live fetches via Decodo of every "
+        "external source cited in the article body — consult these before "
+        "running web_search, because if a cited source has been redirected, "
+        "updated, or corrected, that is often decisive evidence for whether "
+        "the correction request is warranted):\n\n"
+        + "\n\n---\n\n".join(chunks)
+    )
+
+
 def generate_correction(
     *,
     sender_name: str,
@@ -270,8 +385,15 @@ def generate_correction(
     article_body: str,
     featured_image_attribution: str,
     image_url: str,
+    decodo: DecodoClient | None = None,
 ) -> dict[str, Any]:
     """Run Claude with web_search on the full request + article context.
+
+    Before calling Claude, we scrape every external link in article_body
+    via Decodo and include each source's current title/meta/visible text
+    in the prompt. This is how we catch cases where a cited article has
+    been redirected to an updated version (e.g. a news outlet's follow-up
+    saying charges were dropped).
 
     Returns a dict containing the parsed correction JSON plus model metadata.
     """
@@ -280,31 +402,64 @@ def generate_correction(
         "CORRECTIONS_GENERATE_MODEL",
         os.getenv("VERIFICATION_MODEL", "claude-sonnet-4-20250514"),
     )
-    timeout = float(os.getenv("CORRECTIONS_TIMEOUT_SECONDS", "120"))
+    timeout = float(os.getenv("CORRECTIONS_TIMEOUT_SECONDS", "180"))
     max_uses_raw = os.getenv("CORRECTIONS_WEB_SEARCH_MAX_USES", "5").strip()
     try:
         max_uses = max(1, min(20, int(max_uses_raw)))
     except ValueError:
         max_uses = 5
 
+    max_links_raw = os.getenv("CORRECTIONS_MAX_OUTBOUND_LINKS", "8").strip()
+    try:
+        max_outbound_links = max(0, min(20, int(max_links_raw)))
+    except ValueError:
+        max_outbound_links = 8
+
+    snapshot_chars_raw = os.getenv("CORRECTIONS_OUTBOUND_CHARS", "3500").strip()
+    try:
+        snapshot_chars = max(500, min(8000, int(snapshot_chars_raw)))
+    except ValueError:
+        snapshot_chars = 3500
+
+    decodo = decodo or DecodoClient()
+
+    outbound_links = _extract_outbound_links(article_body)
+    snapshots: list[dict[str, Any]] = []
+    if max_outbound_links > 0 and outbound_links:
+        snapshots = _fetch_outbound_snapshots(
+            decodo,
+            outbound_links,
+            max_links=max_outbound_links,
+            max_chars=snapshot_chars,
+        )
+
+    snapshots_section = _format_outbound_snapshots(snapshots)
+
     name_fragment = sender_name.strip() or "name not provided"
     email_fragment = sender_email.strip() or "email not provided"
 
-    user_prompt = (
-        "**Correction Request**:\n"
-        "We have a correction request that was emailed to Hoodline regarding "
-        "an article that we published. The email came from "
-        f"{name_fragment}, {email_fragment} with subject line "
-        f'"{subject.strip()}":\n'
-        f"{body}\n\n"
-        "**Our article**:\n"
-        f"Title:\n{title}\n\n"
-        f"Meta Description:\n{meta_description}\n\n"
-        f"Meta Title:\n{meta_title}\n\n"
-        f"Excerpt:\n{excerpt}\n\n"
-        f"Body (HTML fragment):\n{article_body}\n\n"
-        f"Featured Image Attribution:\n{featured_image_attribution}\n\n"
-        f"Image URL:\n{image_url}\n\n"
+    prompt_parts = [
+        "**Correction Request**:",
+        (
+            "We have a correction request that was emailed to Hoodline regarding "
+            "an article that we published. The email came from "
+            f"{name_fragment}, {email_fragment} with subject line "
+            f'"{subject.strip()}":\n{body}'
+        ),
+        "**Our article**:",
+        f"Title:\n{title}",
+        f"Meta Description:\n{meta_description}",
+        f"Meta Title:\n{meta_title}",
+        f"Excerpt:\n{excerpt}",
+        f"Body (HTML fragment):\n{article_body}",
+        f"Featured Image Attribution:\n{featured_image_attribution}",
+        f"Image URL:\n{image_url}",
+    ]
+
+    if snapshots_section:
+        prompt_parts.append(snapshots_section)
+
+    prompt_parts.append(
         "**Your Task**:\n"
         "Create a JSON with any of the following, should they need to be "
         "edited, updated or corrected: t, md, mt, ex, b, fia, if (for Image "
@@ -322,6 +477,8 @@ def generate_correction(
         "Editor's Note would say something implying that we fixed the "
         "timeline of events."
     )
+
+    user_prompt = "\n\n".join(prompt_parts)
 
     payload: dict[str, Any] = {
         "model": model,
@@ -379,6 +536,18 @@ def generate_correction(
     usage = data.get("usage") or {}
     server_tool_use = usage.get("server_tool_use") or {}
 
+    snapshots_meta = [
+        {
+            "requested_url": s.get("requested_url", ""),
+            "final_url": s.get("final_url", ""),
+            "redirected": bool(s.get("redirected")),
+            "title": s.get("title", ""),
+            "has_text": bool((s.get("text") or "").strip()),
+            "error": s.get("error") or None,
+        }
+        for s in snapshots
+    ]
+
     return {
         "correction": cleaned,
         "changes": changes,
@@ -388,4 +557,6 @@ def generate_correction(
         "web_search_requests": server_tool_use.get("web_search_requests"),
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
+        "outbound_snapshots": snapshots_meta,
+        "outbound_links_found": len(outbound_links),
     }

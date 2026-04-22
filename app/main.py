@@ -1129,6 +1129,7 @@ async def api_corrections_generate(
             article_body=payload.article_body,
             featured_image_attribution=payload.featured_image_attribution,
             image_url=payload.image_url,
+            decodo=decodo_client,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

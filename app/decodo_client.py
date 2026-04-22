@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import re
 from typing import Any
 
 import requests
@@ -148,6 +149,60 @@ class DecodoClient:
 
         return _extract_page_fields(html, url)
 
+    def scrape_page_text(self, url: str, *, max_chars: int = 4000) -> dict[str, Any]:
+        """Fetch a page and return its visible text + metadata + resolved URL.
+
+        Used by the corrections wizard to snapshot every outbound link in a
+        Hoodline article so Claude can notice when a cited source has issued
+        a correction, been redirected to an update, or otherwise changed
+        the underlying facts.
+        """
+        url = (url or "").strip()
+        if not url:
+            raise ValueError("url is required")
+
+        data = self._post_scrape(
+            {
+                "target": "universal",
+                "url": url,
+                "headless": "html",
+                "page_count": 1,
+            }
+        )
+
+        results = data.get("results") or []
+        first = results[0] if results else {}
+        html = first.get("content") if isinstance(first, dict) else None
+        final_url = ""
+        if isinstance(first, dict):
+            final_url = (
+                str(first.get("url") or "")
+                or str(first.get("final_url") or "")
+                or str(first.get("task_id_url") or "")
+            )
+
+        if not isinstance(html, str) or not html:
+            return {
+                "requested_url": url,
+                "final_url": final_url or url,
+                "redirected": bool(final_url) and final_url != url,
+                "title": "",
+                "meta_description": "",
+                "text": "",
+            }
+
+        fields = _extract_page_fields(html, url)
+        text = _extract_visible_text(html, max_chars=max_chars)
+
+        return {
+            "requested_url": url,
+            "final_url": final_url or url,
+            "redirected": bool(final_url) and final_url != url,
+            "title": fields.get("title", ""),
+            "meta_description": fields.get("meta_description", ""),
+            "text": text,
+        }
+
 
 def _parse_structured_google(content: Any) -> list[dict[str, Any]]:
     """Pull organic results out of Decodo's structured google_search content."""
@@ -267,6 +322,26 @@ def _extract_page_fields(html: str, source_url: str) -> dict[str, Any]:
         "source_url": source_url,
         "html_length": len(html),
     }
+
+
+_BOILERPLATE_TAGS = (
+    "script", "style", "noscript", "svg", "nav", "footer",
+    "header", "aside", "form", "iframe", "template",
+)
+
+
+def _extract_visible_text(html: str, *, max_chars: int = 4000) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(_BOILERPLATE_TAGS):
+        tag.decompose()
+
+    container = soup.find("article") or soup.find("main") or soup.body or soup
+    text = container.get_text(separator=" ", strip=True)
+    text = re.sub(r"\s+", " ", text)
+
+    if max_chars and len(text) > max_chars:
+        return text[: max_chars - 1].rstrip() + "…"
+    return text
 
 
 def _strip_site_suffix(title: str) -> str:
