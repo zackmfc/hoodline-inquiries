@@ -94,34 +94,70 @@ class ArticleLocator:
           matched_post (dict | None)   the cached editorial post that hit
           authoritative_title (str)    what we ended up searching with
           trace (list[dict])           step-by-step diagnostics
+
+        Cascade:
+          1. Parse email for url + title mention.
+          2. If a title is present, try Discord directly (first 4 words).
+          3. Even on email-title hit miss: always Google "<title> hoodline"
+             via Decodo to discover / verify the canonical Hoodline URL —
+             the sender's title might be slightly off, and the email URL's
+             og:title can be stale.
+          4. If we still have no URL, try keyword + hoodline.
+          5. Scrape the canonical URL. Retry Discord against every title
+             candidate we extracted (h1, stripped <title>, og:title), then
+             meta title.
+          6. Flag for the user if nothing matched.
         """
         trace: list[TraceStep] = []
 
         combined = f"{email_subject or ''}\n{email_body or ''}"
-        url = (hinted_url or "").strip() or self._extract_hoodline_url(combined)
-        title = (hinted_title or "").strip()
+        email_url = (hinted_url or "").strip() or self._extract_hoodline_url(combined)
+        email_title = (hinted_title or "").strip()
 
         trace.append(TraceStep(
             step="extract",
             action="parse_email",
-            detail=f"hoodline_url={'yes' if url else 'no'}; title_mention={'yes' if title else 'no'}",
-            data={"url": url, "title": title},
+            detail=f"hoodline_url={'yes' if email_url else 'no'}; title_mention={'yes' if email_title else 'no'}",
+            data={"url": email_url, "title": email_title},
         ))
 
-        # Step 2: If we have a title, search Discord immediately.
-        if title:
-            post = self._search_discord(title, trace, label="email_title")
+        # Step 2: Title → Discord first pass.
+        if email_title:
+            post = self._search_discord(email_title, trace, label="email_title")
             if post:
-                return self._resolved(post, trace, title)
+                return self._resolved(post, trace, email_title)
 
-        # Step 3: Make sure we have a hoodline.com URL. If not, Google for one.
-        if not url:
-            url = self._find_hoodline_url_via_google(
-                query_seed=title or self._generate_keyword(combined),
+        # Step 3: Verify the canonical URL via Google. Runs even when the
+        # email already has a URL — the sender's title may be wrong, and
+        # Google gives us the Hoodline URL Google thinks is the right one.
+        canonical_url = ""
+        if email_title:
+            canonical_url = self._find_hoodline_url_via_google(
+                query_seed=email_title,
                 trace=trace,
+                label="title_query",
             )
 
-        if not url:
+        # Fall back to the URL the email already contained.
+        if not canonical_url and email_url:
+            trace.append(TraceStep(
+                step="google_search",
+                action="skip_have_email_url",
+                detail="Using the URL from the email; Google did not surface a better canonical.",
+                data={"url": email_url},
+            ))
+            canonical_url = email_url
+
+        # If we STILL have no URL (neither title nor email URL helped),
+        # generate a keyword and Google for it.
+        if not canonical_url:
+            canonical_url = self._find_hoodline_url_via_google(
+                query_seed=self._generate_keyword(combined),
+                trace=trace,
+                label="keyword_query",
+            )
+
+        if not canonical_url:
             trace.append(TraceStep(
                 step="flag",
                 action="no_url_found",
@@ -129,34 +165,54 @@ class ArticleLocator:
             ))
             return self._not_found(trace)
 
-        # Scrape the page for authoritative title + meta title.
-        page = self._scrape_page(url, trace)
-        authoritative_title = (page.get("title") or "").strip()
+        # Step 4: Scrape the canonical URL.
+        page = self._scrape_page(canonical_url, trace)
+
+        # Step 5: Retry Discord against every scraped candidate.
+        candidates: list[str] = []
+        for cand in page.get("title_candidates") or []:
+            if not isinstance(cand, str):
+                continue
+            c = cand.strip()
+            if not c:
+                continue
+            if email_title and c.lower() == email_title.lower():
+                continue  # already tried this one against Discord
+            if c in candidates:
+                continue
+            candidates.append(c)
+
         meta_title = (page.get("meta_title") or "").strip()
+        if (
+            meta_title
+            and meta_title not in candidates
+            and (not email_title or meta_title.lower() != email_title.lower())
+        ):
+            candidates.append(meta_title)
 
-        # Step 4: Retry Discord with authoritative page title.
-        if authoritative_title and authoritative_title != title:
-            post = self._search_discord(authoritative_title, trace, label="page_title")
+        for idx, candidate in enumerate(candidates):
+            label = "meta_title" if candidate == meta_title else f"page_title_{idx + 1}"
+            post = self._search_discord(candidate, trace, label=label)
             if post:
-                return self._resolved(post, trace, authoritative_title, article_url=url)
-
-        # Step 5: Fall back to meta title.
-        if meta_title and meta_title != authoritative_title:
-            post = self._search_discord(meta_title, trace, label="meta_title")
-            if post:
-                return self._resolved(post, trace, meta_title, article_url=url)
+                return self._resolved(
+                    post,
+                    trace,
+                    candidate,
+                    article_url=canonical_url,
+                )
 
         # Nothing matched — flag.
+        tried = [t for t in [email_title, *candidates] if t]
         trace.append(TraceStep(
             step="flag",
             action="exhausted_cascade",
             detail="No Discord message matched any of the attempted titles.",
             data={
-                "tried_titles": [t for t in [title, authoritative_title, meta_title] if t],
-                "article_url": url,
+                "tried_titles": tried,
+                "article_url": canonical_url,
             },
         ))
-        return self._not_found(trace, article_url=url)
+        return self._not_found(trace, article_url=canonical_url)
 
     # ───────────────────────────────────────────────────────── internals ──
 
@@ -241,12 +297,13 @@ class ArticleLocator:
         *,
         query_seed: str,
         trace: list[TraceStep],
+        label: str = "query",
     ) -> str:
         seed = (query_seed or "").strip()
         if not seed:
             trace.append(TraceStep(
                 step="google_search",
-                action="skip",
+                action=f"skip_{label}",
                 detail="No query seed available — cannot search Google.",
             ))
             return ""
@@ -255,8 +312,8 @@ class ArticleLocator:
         if not self.decodo.is_configured():
             trace.append(TraceStep(
                 step="google_search",
-                action="not_configured",
-                detail="Decodo is not configured; cannot run Google fallback search.",
+                action=f"not_configured_{label}",
+                detail="Decodo is not configured; cannot run Google search.",
                 data={"query": query},
             ))
             return ""
@@ -266,7 +323,7 @@ class ArticleLocator:
         except Exception as exc:
             trace.append(TraceStep(
                 step="google_search",
-                action="error",
+                action=f"error_{label}",
                 detail=str(exc)[:200],
                 data={"query": query},
             ))
@@ -274,10 +331,14 @@ class ArticleLocator:
 
         for item in results:
             url = str(item.get("url") or "")
-            if "hoodline.com/" in url and "hoodline.com/tag" not in url:
+            if (
+                "hoodline.com/" in url
+                and "hoodline.com/tag" not in url
+                and "hoodline.com/news" not in url
+            ):
                 trace.append(TraceStep(
                     step="google_search",
-                    action="hit",
+                    action=f"hit_{label}",
                     detail=url,
                     matched=True,
                     data={"query": query, "title": item.get("title", "")},
@@ -286,8 +347,8 @@ class ArticleLocator:
 
         trace.append(TraceStep(
             step="google_search",
-            action="no_hoodline_result",
-            detail=f"Ran query {query!r} via Decodo but no hoodline.com result.",
+            action=f"miss_{label}",
+            detail=f"Ran query {query!r} via Decodo but no hoodline.com article-level result.",
             data={"query": query, "result_count": len(results)},
         ))
         return ""

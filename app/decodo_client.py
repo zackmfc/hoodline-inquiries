@@ -219,6 +219,7 @@ def _extract_page_fields(html: str, source_url: str) -> dict[str, Any]:
 
     title_el = soup.find("title")
     page_title = title_el.get_text(strip=True) if title_el else ""
+    page_title_stripped = _strip_site_suffix(page_title)
 
     og_title_el = soup.find("meta", attrs={"property": "og:title"})
     og_title = og_title_el.get("content", "").strip() if og_title_el else ""
@@ -226,24 +227,39 @@ def _extract_page_fields(html: str, source_url: str) -> dict[str, Any]:
     h1_el = soup.find("h1")
     h1_text = h1_el.get_text(" ", strip=True) if h1_el else ""
 
-    meta_title_el = soup.find("meta", attrs={"name": "title"}) or soup.find(
-        "meta", attrs={"property": "og:title"}
-    )
-    meta_title = meta_title_el.get("content", "").strip() if meta_title_el else ""
+    meta_name_title_el = soup.find("meta", attrs={"name": "title"})
+    meta_title = meta_name_title_el.get("content", "").strip() if meta_name_title_el else ""
+    if not meta_title:
+        meta_title = og_title or page_title_stripped
 
     meta_desc_el = soup.find("meta", attrs={"name": "description"}) or soup.find(
         "meta", attrs={"property": "og:description"}
     )
     meta_description = meta_desc_el.get("content", "").strip() if meta_desc_el else ""
 
-    # Heuristic: the visible headline is usually a better "article title"
-    # than the <title> tag (which often includes " | Hoodline" suffixes).
-    # Prefer og:title > h1 > stripped <title>.
-    article_title = og_title or h1_text or _strip_site_suffix(page_title)
+    # Some sites (Hoodline included) have an og:title that lags behind
+    # edits to the article. The h1 is typically the live headline, so
+    # prefer h1 > stripped <title> > og:title, and expose all three as
+    # candidates so the locator can try each one.
+    candidates_ordered = [h1_text, page_title_stripped, og_title]
+    dedup_candidates: list[str] = []
+    seen: set[str] = set()
+    for cand in candidates_ordered:
+        c = (cand or "").strip()
+        if not c:
+            continue
+        key = c.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup_candidates.append(c)
+
+    article_title = dedup_candidates[0] if dedup_candidates else ""
 
     return {
         "title": article_title,
-        "meta_title": meta_title or page_title,
+        "title_candidates": dedup_candidates,
+        "meta_title": meta_title,
         "meta_description": meta_description,
         "og_title": og_title,
         "h1": h1_text,
