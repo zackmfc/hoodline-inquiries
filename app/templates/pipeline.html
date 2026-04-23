@@ -1,49 +1,50 @@
 {% extends "base.html" %}
-{% block title %}Pipeline Tester | Hoodline Dashboard{% endblock %}
+{% block title %}Pipeline Tester | Hoodline Corrections{% endblock %}
 {% block content %}
-<section class="panel">
-  <div class="row-between wrap">
+<section class="bg-surface border border-line rounded-md border-l-[3px] border-l-brick p-6 shadow-panel">
+  <div class="flex flex-wrap justify-between items-start gap-4">
     <div>
-      <h1>Pipeline Tester</h1>
-      <p>Run each correction-system step in sequence. Each completed step records structured output and logs.</p>
+      <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-1">Setup</p>
+      <h1 class="font-display font-semibold text-[2rem] leading-tight tracking-tight">Pipeline Tester</h1>
+      <p class="text-muted max-w-[68ch] mt-1">Run each correction-system step in sequence. Each completed step records structured output and logs.</p>
     </div>
-    <div class="btn-group">
-      <button id="new-run-btn" class="btn" type="button">Start New Run</button>
-      <button id="run-all-btn" class="btn btn-accent" type="button">Run All Steps</button>
+    <div class="flex gap-2 items-center">
+      <button id="new-run-btn" class="bg-surface border border-line rounded px-3.5 py-2 text-sm font-medium hover:bg-alt hover:border-ink" type="button">Start New Run</button>
+      <button id="run-all-btn" class="bg-brick text-white border border-brick rounded px-3.5 py-2 text-sm font-medium hover:bg-brick-deep hover:border-brick-deep" type="button">Run All Steps</button>
     </div>
   </div>
-  <div class="run-banner" id="run-banner">No active run</div>
+  <div class="mt-4 border border-dashed border-line rounded px-3 py-2.5 text-[0.88rem] bg-alt text-muted" id="run-banner">No active run</div>
 </section>
 
-<section class="grid two">
-  <article class="panel">
-    <h2>Steps</h2>
-    <div id="steps-container" class="steps-stack"></div>
+<section class="grid md:grid-cols-[1.2fr_1fr] gap-4">
+  <article class="bg-surface border border-line rounded-md p-6 shadow-panel">
+    <h2 class="font-display font-semibold text-[1.2rem] mb-3">Steps</h2>
+    <div id="steps-container" class="steps-stack grid gap-2.5"></div>
   </article>
 
-  <article class="panel">
-    <h2>Run Logs</h2>
-    <p class="muted">Server logs are also persisted to <code>logs/runs/&lt;run_id&gt;.log</code>.</p>
+  <article class="bg-surface border border-line rounded-md p-6 shadow-panel">
+    <h2 class="font-display font-semibold text-[1.2rem] mb-1">Run Logs</h2>
+    <p class="text-muted text-[0.86rem] mb-3">Server logs are also persisted to <code class="font-mono text-[0.82rem] bg-alt border border-line rounded px-1.5 py-0.5">logs/runs/&lt;run_id&gt;.log</code>.</p>
     <pre id="logs-view" class="logs-view">Start a run to stream logs.</pre>
   </article>
 </section>
 
-<section class="panel">
-  <h2>Step Output</h2>
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
+  <h2 class="font-display font-semibold text-[1.2rem] mb-3">Step Output</h2>
   <pre id="output-view" class="output-view">No step output yet.</pre>
 </section>
 
 <template id="step-template">
-  <section class="step-card">
-    <div class="row-between wrap">
+  <section class="step-card border border-line rounded-md p-4 bg-surface">
+    <div class="flex flex-wrap justify-between items-center gap-3">
       <div>
-        <h3 class="step-label"></h3>
-        <p class="muted step-desc"></p>
+        <h3 class="step-label font-display font-semibold text-[1rem] m-0"></h3>
+        <p class="text-muted step-desc text-[0.88rem] mt-0.5 m-0"></p>
       </div>
       <span class="pill step-state">Pending</span>
     </div>
     <form class="step-form"></form>
-    <button class="btn run-step-btn" type="button">Run Step</button>
+    <button class="run-step-btn mt-3 bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium hover:bg-black" type="button">Run Step</button>
   </section>
 </template>
 

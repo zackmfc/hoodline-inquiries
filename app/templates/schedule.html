@@ -1,50 +1,52 @@
 {% extends "base.html" %}
-{% block title %}Dev Schedule | Hoodline Dashboard{% endblock %}
+{% block title %}Dev Schedule | Hoodline Corrections{% endblock %}
 {% block content %}
-<section class="panel">
-  <h1>Dev Schedule</h1>
-  <p>Start date: Thursday, April 16, 2026. Check items as completed to recalculate timeline projections.</p>
+<section class="bg-surface border border-line rounded-md border-l-[3px] border-l-brick p-6 shadow-panel">
+  <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-1">Setup</p>
+  <h1 class="font-display font-semibold text-[2rem] leading-tight tracking-tight">Dev Schedule</h1>
+  <p class="text-muted max-w-[68ch] mt-1">Start date: Thursday, April 16, 2026. Check items as completed to recalculate timeline projections.</p>
 </section>
 
-<section class="grid three">
-  <article class="panel stat-card">
-    <h2>Progress</h2>
-    <p><span id="done-count">0</span> / <span id="task-count">0</span> complete</p>
+<section class="grid md:grid-cols-3 gap-4">
+  <article class="bg-surface border border-line rounded-md p-5 shadow-panel">
+    <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-2">Progress</p>
+    <p class="font-display text-[1.4rem] font-semibold mb-2"><span id="done-count">0</span> <span class="text-muted">/</span> <span id="task-count">0</span> <span class="text-[0.86rem] text-muted font-sans font-normal">complete</span></p>
     <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
   </article>
 
-  <article class="panel stat-card">
-    <h2>Remaining</h2>
-    <p><span id="remaining-hours">0</span> hours</p>
-    <label for="hours-per-day">Build hours/day</label>
-    <input id="hours-per-day" type="number" min="1" max="24" step="1" value="6" />
+  <article class="bg-surface border border-line rounded-md p-5 shadow-panel">
+    <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-2">Remaining</p>
+    <p class="font-display text-[1.4rem] font-semibold mb-2"><span id="remaining-hours">0</span> <span class="text-[0.86rem] text-muted font-sans font-normal">hours</span></p>
+    <label for="hours-per-day" class="text-[0.84rem] text-muted block mb-1">Build hours/day</label>
+    <input id="hours-per-day" type="number" min="1" max="24" step="1" value="6"
+           class="w-full border border-line rounded px-2.5 py-1.5 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
   </article>
 
-  <article class="panel stat-card">
-    <h2>Projection</h2>
-    <p id="projected-finish">--</p>
-    <p id="timeline-health" class="muted"></p>
-    <p id="current-time" class="mono"></p>
+  <article class="bg-surface border border-line rounded-md p-5 shadow-panel">
+    <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-2">Projection</p>
+    <p id="projected-finish" class="font-display text-[1.4rem] font-semibold mb-1">--</p>
+    <p id="timeline-health" class="text-[0.86rem] text-muted m-0"></p>
+    <p id="current-time" class="font-mono text-[0.78rem] text-muted mt-1"></p>
   </article>
 </section>
 
-<section class="panel">
-  <div class="row-between">
-    <h2>Tasks</h2>
-    <button class="btn ghost" id="reset-btn" type="button">Reset</button>
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
+  <div class="flex justify-between items-center gap-3 mb-4">
+    <h2 class="font-display font-semibold text-[1.2rem] m-0">Tasks</h2>
+    <button class="bg-surface border border-line rounded px-3 py-1.5 text-sm font-medium hover:bg-alt hover:border-ink" id="reset-btn" type="button">Reset</button>
   </div>
-  <ul class="task-list" id="task-list"></ul>
+  <ul class="task-list list-none m-0 p-0 grid gap-2" id="task-list"></ul>
 </section>
 
 <template id="task-template">
-  <li class="task-item">
-    <label class="task-title-wrap">
-      <input type="checkbox" class="task-check" />
+  <li class="task-item border border-line rounded-md px-3.5 py-3 bg-surface">
+    <label class="task-title-wrap flex items-center gap-2.5 font-semibold">
+      <input type="checkbox" class="task-check w-[18px] h-[18px] accent-brick" />
       <span class="task-title"></span>
     </label>
-    <div class="task-meta">
-      <span class="task-dates"></span>
-      <span class="task-hours"></span>
+    <div class="task-meta flex flex-wrap gap-1.5 mt-2">
+      <span class="task-dates text-[0.8rem] border border-line rounded-full px-2.5 py-0.5 bg-alt"></span>
+      <span class="task-hours text-[0.8rem] border border-line rounded-full px-2.5 py-0.5 bg-alt"></span>
       <span class="task-status"></span>
     </div>
   </li>

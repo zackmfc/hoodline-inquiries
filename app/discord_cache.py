@@ -40,13 +40,32 @@ class DiscordCachePopulator:
     def is_configured(self) -> bool:
         return bool(self.bot_token) and bool(self.guild_id)
 
-    def populate(self, storage: Any) -> dict[str, Any]:
-        """Scan all text channels in the guild and cache article references."""
+    def populate(
+        self,
+        storage: Any,
+        *,
+        since: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Scan all text channels in the guild and cache article references.
+
+        Args:
+            storage: The Storage instance to write into.
+            since: If set, only scan messages posted after this timestamp
+                (minus a 30-min safety buffer to catch late edits). If None,
+                falls back to the default `cache_days` window.
+        """
         if not self.is_configured():
             return {"status": "skipped", "reason": "DISCORD_BOT_TOKEN or DISCORD_GUILD_ID not set"}
 
         channels = self._list_text_channels()
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self.cache_days)
+        if since is not None:
+            # Safety buffer so a slightly-older edited message still gets
+            # picked up on the next run.
+            cutoff = since - timedelta(minutes=30)
+            mode = "incremental"
+        else:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=self.cache_days)
+            mode = "full"
 
         total_messages = 0
         total_articles = 0
@@ -92,7 +111,9 @@ class DiscordCachePopulator:
 
         return {
             "status": "ok",
+            "mode": mode,
             "guild_id": self.guild_id,
+            "cutoff": cutoff.isoformat(),
             "channels_scanned": len(channels),
             "messages_scanned": total_messages,
             "articles_cached": total_articles,

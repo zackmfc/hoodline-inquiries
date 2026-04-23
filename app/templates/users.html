@@ -1,54 +1,58 @@
 {% extends "base.html" %}
-{% block title %}Users | Hoodline Dashboard{% endblock %}
+{% block title %}Users | Hoodline Corrections{% endblock %}
 {% block content %}
-<section class="panel">
-  <h1>User Management</h1>
-  <p>Superuser can create admins and users. Admin can create and manage users only.</p>
+<section class="bg-surface border border-line rounded-md border-l-[3px] border-l-brick p-6 shadow-panel">
+  <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-1">Admin</p>
+  <h1 class="font-display font-semibold text-[2rem] leading-tight tracking-tight">User Management</h1>
+  <p class="text-muted max-w-[68ch] mt-1">Superuser can create admins and users. Admin can create and manage users only.</p>
   {% if error %}
-  <p class="error">{{ error }}</p>
+  <p class="error mt-3">{{ error }}</p>
   {% endif %}
   {% if success %}
-  <p class="success">{{ success }}</p>
+  <p class="success mt-3">{{ success }}</p>
   {% endif %}
 </section>
 
-<section class="grid two">
-  <article class="panel">
-    <h2>Create User</h2>
-    <form method="post" action="/users/create" class="auth-form">
-      <label for="new-username">Username</label>
-      <input id="new-username" type="email" name="username" required />
+<section class="grid md:grid-cols-[1.2fr_1fr] gap-4">
+  <article class="bg-surface border border-line rounded-md p-6 shadow-panel">
+    <h2 class="font-display font-semibold text-[1.2rem] mb-3">Create user</h2>
+    <form method="post" action="/users/create" class="auth-form grid gap-2.5">
+      <label for="new-username" class="text-[0.88rem] font-semibold">Username</label>
+      <input id="new-username" type="email" name="username" required
+             class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
 
-      <label for="new-password">Password</label>
-      <input id="new-password" type="password" name="password" required />
+      <label for="new-password" class="text-[0.88rem] font-semibold">Password</label>
+      <input id="new-password" type="password" name="password" required
+             class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
 
-      <label for="new-role">Role</label>
-      <select id="new-role" name="role">
+      <label for="new-role" class="text-[0.88rem] font-semibold">Role</label>
+      <select id="new-role" name="role"
+              class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10">
         <option value="user">user</option>
         {% if is_superuser %}
         <option value="admin">admin</option>
         {% endif %}
       </select>
 
-      <button class="btn" type="submit">Create</button>
+      <button class="mt-2 bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium hover:bg-black" type="submit">Create</button>
     </form>
   </article>
 
-  <article class="panel">
-    <h2>Accounts</h2>
-    <div class="users-list">
+  <article class="bg-surface border border-line rounded-md p-6 shadow-panel">
+    <h2 class="font-display font-semibold text-[1.2rem] mb-3">Accounts</h2>
+    <div class="grid gap-2.5">
       {% for user in users %}
-      <form class="user-row" method="post" action="/users/{{ user.username }}/update">
-        <div class="user-row-head">
-          <strong>{{ user.username }}</strong>
+      <form class="user-row border border-line rounded-md p-3.5 grid gap-2 bg-surface" method="post" action="/users/{{ user.username }}/update">
+        <div class="flex gap-2 items-center flex-wrap">
+          <strong class="font-display">{{ user.username }}</strong>
           <span class="pill">{{ user.role }}</span>
           {% if not user.is_active %}
           <span class="pill status-late">inactive</span>
           {% endif %}
         </div>
 
-        <label>Role
-          <select name="role" {% if current_user.role == 'admin' and user.role != 'user' %}disabled{% endif %}>
+        <label class="text-[0.86rem] grid gap-1">Role
+          <select name="role" class="w-full border border-line rounded px-2.5 py-1.5 bg-surface text-[0.9rem]" {% if current_user.role == 'admin' and user.role != 'user' %}disabled{% endif %}>
             <option value="user" {% if user.role == 'user' %}selected{% endif %}>user</option>
             {% if is_superuser %}
             <option value="admin" {% if user.role == 'admin' %}selected{% endif %}>admin</option>
@@ -57,21 +61,22 @@
           </select>
         </label>
 
-        <label>New password (optional)
-          <input type="password" name="password" placeholder="Leave blank to keep current" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %} />
+        <label class="text-[0.86rem] grid gap-1">New password (optional)
+          <input type="password" name="password" placeholder="Leave blank to keep current" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %}
+                 class="w-full border border-line rounded px-2.5 py-1.5 bg-surface text-[0.9rem]" />
         </label>
 
-        <label>Active
-          <select name="is_active" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %}>
+        <label class="text-[0.86rem] grid gap-1">Active
+          <select name="is_active" class="w-full border border-line rounded px-2.5 py-1.5 bg-surface text-[0.9rem]" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %}>
             <option value="true" {% if user.is_active %}selected{% endif %}>true</option>
             <option value="false" {% if not user.is_active %}selected{% endif %}>false</option>
           </select>
         </label>
 
-        <button class="btn ghost" type="submit" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %}>Update</button>
+        <button class="bg-surface border border-line rounded px-3 py-1.5 text-sm font-medium hover:bg-alt hover:border-ink" type="submit" {% if current_user.role == 'admin' and user.role == 'superuser' %}disabled{% endif %}>Update</button>
       </form>
       {% else %}
-      <p class="muted">No users found.</p>
+      <p class="text-muted">No users found.</p>
       {% endfor %}
     </div>
   </article>

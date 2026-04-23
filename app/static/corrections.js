@@ -23,6 +23,19 @@
     discord: null,
     cms: null,
     generate: null,
+    gmail_message_id: "",
+  };
+
+  const WIZARD_STATUS_LABELS = {
+    new: { text: "New", cls: "" },
+    assessed: { text: "Assessed — gate passed", cls: "status-active" },
+    gate_failed: { text: "Gate failed", cls: "status-late" },
+    image_only: { text: "Image-only", cls: "status-late" },
+    located: { text: "Article located", cls: "status-active" },
+    completed: { text: "Completed", cls: "status-done" },
+    corrected: { text: "Corrected", cls: "status-done" },
+    triaged_pending: { text: "Triaged · Pending", cls: "status-active" },
+    triaged_rejected: { text: "Triaged · Rejected", cls: "status-late" },
   };
 
   function setStepState(stepEl, newState) {
@@ -129,7 +142,9 @@
 
   // ── Step 1a: Inbox picker ───────────────────────────────────────
   const inboxFetchBtn = document.getElementById("inbox-fetch-btn");
+  const inboxClearCacheBtn = document.getElementById("inbox-clear-cache-btn");
   const inboxLimitSel = document.getElementById("inbox-limit");
+  const inboxIncludeProcessed = document.getElementById("inbox-include-processed");
   const inboxStatus = document.getElementById("inbox-status");
   const inboxList = document.getElementById("inbox-list");
   const inboxItemTemplate = document.getElementById("inbox-item-template");
@@ -150,8 +165,134 @@
     }
   }
 
+  function applyTriageVisual(itemRoot, decision) {
+    if (!itemRoot) return;
+    itemRoot.classList.remove("is-triaged-pending", "is-triaged-rejected");
+    if (decision === "pending") {
+      itemRoot.classList.add("is-triaged-pending");
+      itemRoot.style.borderLeft = "3px solid #2f6b46";
+      itemRoot.style.opacity = "0.85";
+    } else if (decision === "rejected") {
+      itemRoot.classList.add("is-triaged-rejected");
+      itemRoot.style.borderLeft = "3px solid #a3321f";
+      itemRoot.style.opacity = "0.6";
+    }
+  }
+
+  function attachTriageHandlers(itemRoot, msg, refs) {
+    const { pendingBtn, rejectBtn, statusEl, wizardStatusEl } = refs;
+    if (!pendingBtn || !rejectBtn) return;
+
+    // Reflect existing triage state on initial render.
+    const existing = msg.wizard_status;
+    if (existing === "triaged_pending") applyTriageVisual(itemRoot, "pending");
+    if (existing === "triaged_rejected") applyTriageVisual(itemRoot, "rejected");
+
+    async function submitTriage(decision, triggeringBtn) {
+      if (!msg.gmail_message_id) {
+        statusEl.textContent = "No Gmail message id — cannot triage.";
+        return;
+      }
+      pendingBtn.disabled = true;
+      rejectBtn.disabled = true;
+      statusEl.textContent = decision === "pending" ? "Marking pending…" : "Rejecting…";
+      try {
+        const resp = await fetch("/api/corrections/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            gmail_message_id: msg.gmail_message_id,
+            decision,
+          }),
+        });
+        const text = await resp.text();
+        let payload;
+        try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { detail: text }; }
+        if (!resp.ok) {
+          throw new Error(payload.detail || `HTTP ${resp.status}`);
+        }
+        applyTriageVisual(itemRoot, decision);
+        const label = decision === "pending" ? "Pending" : "Rejected";
+        statusEl.textContent = `Marked as ${label}.`;
+        statusEl.classList.add("status-done");
+
+        if (wizardStatusEl) {
+          wizardStatusEl.innerHTML = "";
+          const conf = WIZARD_STATUS_LABELS[payload.status] || WIZARD_STATUS_LABELS.new;
+          const pill = document.createElement("span");
+          pill.className = "pill " + (conf.cls || "");
+          pill.textContent = conf.text;
+          wizardStatusEl.appendChild(pill);
+        }
+        msg.wizard_status = payload.status;
+      } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        statusEl.classList.add("status-late");
+        pendingBtn.disabled = false;
+        rejectBtn.disabled = false;
+      }
+    }
+
+    pendingBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      submitTriage("pending", pendingBtn);
+    });
+    rejectBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      submitTriage("rejected", rejectBtn);
+    });
+  }
+
+  if (inboxClearCacheBtn) {
+    inboxClearCacheBtn.addEventListener("click", async () => {
+      const ok = window.confirm(
+        "Wipe all Corrections-wizard state? Every email returns to 'new' and you'll lose any in-progress wizard runs. Gmail, Discord cache, and published corrections are NOT affected."
+      );
+      if (!ok) return;
+
+      inboxClearCacheBtn.disabled = true;
+      inboxFetchBtn.disabled = true;
+      setStatus(inboxStatus, "Clearing wizard cache…", "info");
+
+      try {
+        const resp = await fetch("/api/corrections/wizard/clear", {
+          method: "POST",
+        });
+        const text = await resp.text();
+        let payload;
+        try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { detail: text }; }
+        if (!resp.ok) {
+          throw new Error(payload.detail || `HTTP ${resp.status}`);
+        }
+
+        // Reset in-flight wizard state so the currently-open email doesn't
+        // think it's still mid-flow.
+        state.gmail_message_id = "";
+        resetWizardUI();
+        emailForm.reset();
+        inboxList.innerHTML = "";
+        inboxList.hidden = true;
+
+        const cleared = typeof payload.cleared === "number" ? payload.cleared : 0;
+        setStatus(
+          inboxStatus,
+          `Cleared ${cleared} wizard record${cleared === 1 ? "" : "s"}. Fetch the queue to start over.`,
+          "ok"
+        );
+      } catch (err) {
+        setStatus(inboxStatus, `Error: ${err.message}`, "error");
+      } finally {
+        inboxClearCacheBtn.disabled = false;
+        inboxFetchBtn.disabled = false;
+      }
+    });
+  }
+
   inboxFetchBtn.addEventListener("click", async () => {
     const limit = parseInt(inboxLimitSel.value, 10) || 5;
+    const includeProcessed = inboxIncludeProcessed && inboxIncludeProcessed.checked;
     inboxStatus.textContent = "Loading queue from Gmail…";
     inboxStatus.classList.remove("status-late", "status-done");
     inboxStatus.classList.add("status-active");
@@ -159,7 +300,10 @@
     inboxList.innerHTML = "";
 
     try {
-      const resp = await fetch(`/api/corrections/inbox?limit=${limit}`);
+      const url =
+        `/api/corrections/inbox?limit=${limit}` +
+        (includeProcessed ? `&include_processed=true` : ``);
+      const resp = await fetch(url);
       const text = await resp.text();
       let payload;
       try { payload = JSON.parse(text); } catch (_) { payload = { detail: text }; }
@@ -168,8 +312,12 @@
       }
 
       const messages = payload.messages || [];
+      const filtered = payload.filtered_count || 0;
       if (messages.length === 0) {
-        inboxStatus.textContent = "Queue is empty — no unread correction-candidate emails.";
+        const msg = filtered > 0
+          ? `No unprocessed messages — hid ${filtered} already-processed. Tick "Include already-processed" to show them.`
+          : "Queue is empty — no unread correction-candidate emails.";
+        inboxStatus.textContent = msg;
         inboxStatus.classList.remove("status-active", "status-late");
         inboxStatus.classList.add("status-done");
         return;
@@ -177,6 +325,7 @@
 
       messages.forEach((msg) => {
         const frag = inboxItemTemplate.content.cloneNode(true);
+        const itemRoot = frag.querySelector(".inbox-item");
         const btn = frag.querySelector(".inbox-item-btn");
         frag.querySelector(".inbox-item-subject").textContent =
           msg.subject || "(no subject)";
@@ -186,13 +335,47 @@
           msg.sender_raw || msg.sender_email || "(unknown sender)";
         frag.querySelector(".inbox-item-snippet").textContent =
           msg.snippet || "";
-        btn.addEventListener("click", () => prefillFromMessage(msg));
+
+        const statusEl = frag.querySelector(".inbox-item-status");
+        const statusKey = msg.wizard_status || "new";
+        const conf = WIZARD_STATUS_LABELS[statusKey] || WIZARD_STATUS_LABELS.new;
+        if (statusKey !== "new") {
+          const pill = document.createElement("span");
+          pill.className = "pill " + (conf.cls || "");
+          pill.textContent = conf.text;
+          statusEl.appendChild(pill);
+
+          if (msg.wizard_updated_at) {
+            const meta = document.createElement("span");
+            meta.className = "muted inbox-item-status-meta";
+            const who = msg.wizard_touched_by ? ` by ${msg.wizard_touched_by}` : "";
+            meta.textContent = `  ${formatReceivedAt(msg.wizard_updated_at)}${who}`;
+            statusEl.appendChild(meta);
+          }
+          if (itemRoot && conf.cls) itemRoot.classList.add("has-wizard-status");
+        }
+
+        btn.addEventListener("click", () => selectInboxMessage(msg));
+
+        const triagePendingBtn = frag.querySelector(".inbox-item-triage-pending");
+        const triageRejectBtn = frag.querySelector(".inbox-item-triage-reject");
+        const triageStatusEl = frag.querySelector(".inbox-item-triage-status");
+        attachTriageHandlers(itemRoot, msg, {
+          pendingBtn: triagePendingBtn,
+          rejectBtn: triageRejectBtn,
+          statusEl: triageStatusEl,
+          wizardStatusEl: statusEl,
+        });
+
         inboxList.appendChild(frag);
       });
 
       inboxList.hidden = false;
+      const filteredNote = filtered > 0 && !includeProcessed
+        ? ` Hid ${filtered} already-processed.`
+        : "";
       inboxStatus.textContent =
-        `Loaded ${messages.length} message${messages.length === 1 ? "" : "s"}. Click one to prefill the form.`;
+        `Loaded ${messages.length} message${messages.length === 1 ? "" : "s"}.${filteredNote} Click one to prefill the form.`;
       inboxStatus.classList.remove("status-active", "status-late");
       inboxStatus.classList.add("status-done");
     } catch (err) {
@@ -202,13 +385,23 @@
     }
   });
 
-  function prefillFromMessage(msg) {
+  function selectInboxMessage(msg) {
+    resetWizardUI();
+
+    state.gmail_message_id = msg.gmail_message_id || "";
+
     emailForm.querySelector('[name="sender_name"]').value = msg.sender_name || "";
     emailForm.querySelector('[name="sender_email"]').value = msg.sender_email || "";
     emailForm.querySelector('[name="subject"]').value = msg.subject || "";
     emailForm.querySelector('[name="body"]').value = msg.body || msg.snippet || "";
 
-    // Highlight the selected item
+    state.email = {
+      sender_name: msg.sender_name || "",
+      sender_email: msg.sender_email || "",
+      subject: msg.subject || "",
+      body: msg.body || msg.snippet || "",
+    };
+
     inboxList.querySelectorAll(".inbox-item").forEach((el) => {
       el.classList.remove("is-selected");
     });
@@ -219,7 +412,123 @@
     });
     if (idx >= 0) items[idx].classList.add("is-selected");
 
+    restoreWizardState(msg.wizard_state || {}, msg.wizard_status || "new");
+
     emailForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function resetWizardUI() {
+    state.assess = null;
+    state.discord = null;
+    state.cms = null;
+    state.generate = null;
+
+    assessResult.hidden = true;
+    gateVerdict.classList.remove("gate-pass", "gate-fail", "gate-image-only");
+    gateVerdict.innerHTML = "";
+    setStatus(assessStatus, "", "");
+    setStatus(discordStatus, "", "");
+    setStatus(locatorStatus, "", "");
+    setStatus(generateStatus, "", "");
+    discordResult.hidden = true;
+    generateFields.hidden = true;
+    generateSummary.hidden = true;
+    generateRawWrap.hidden = true;
+    if (locatorTrace) {
+      locatorTrace.hidden = true;
+      locatorTrace.innerHTML = "";
+    }
+    clearLocatorBanners();
+
+    setStepState(steps.email, "active");
+    lockStep(steps.discord);
+    lockStep(steps.cms);
+    lockStep(steps.result);
+  }
+
+  function restoreWizardState(stored, status) {
+    if (!stored || typeof stored !== "object") return;
+
+    const assessEntry = stored.assess;
+    if (assessEntry && assessEntry.response) {
+      const res = assessEntry.response;
+      state.assess = res;
+      renderAssessResult(res);
+
+      if (status === "image_only" || res.image_only) {
+        setStepState(steps.email, "done");
+      } else if (res.gate_passed) {
+        setStepState(steps.email, "done");
+        unlockStep(steps.discord);
+      } else {
+        setStepState(steps.email, "blocked");
+      }
+    }
+
+    const discordEntry = stored.discord;
+    if (discordEntry && discordEntry.result && discordEntry.result.found) {
+      const r = discordEntry.result;
+      setDiscordResolved({
+        article_id: r.article_id,
+        cms_edit_url: r.cms_edit_url,
+      });
+      // Restore banners only for auto-located results (manual paste has no metadata).
+      if (discordEntry.source === "auto_locate") {
+        renderLocatorMatchSource(r);
+        renderLocatorGoogleWarning(r);
+      }
+    }
+
+    const generateEntry = stored.generate;
+    if (generateEntry && generateEntry.response) {
+      unlockStep(steps.cms);
+      const cms = generateEntry.cms_inputs || {};
+      Object.entries(cms).forEach(([name, value]) => {
+        const field = cmsForm.querySelector(`[name="${name}"]`);
+        if (field && typeof value === "string") field.value = value;
+      });
+      state.cms = cms;
+      state.generate = generateEntry.response;
+      unlockStep(steps.result);
+      renderGenerateResult(generateEntry.response);
+      setStepState(steps.cms, "done");
+      setStepState(steps.result, "done");
+      showMarkCorrectedIfEligible(status);
+    }
+  }
+
+  function renderAssessResult(res) {
+    scoreCRVS.textContent = res.CRVS;
+    scoreSAS.textContent = res.SAS;
+    meterCRVS.style.width = `${(res.CRVS / 10) * 100}%`;
+    meterSAS.style.width = `${(res.SAS / 10) * 100}%`;
+    reasonCRVS.textContent = res.crvs_reasoning || "";
+    reasonSAS.textContent = res.sas_reasoning || "";
+    assessResult.hidden = false;
+
+    gateVerdict.classList.remove("gate-pass", "gate-fail", "gate-image-only");
+    if (res.gate_passed && res.image_only) {
+      gateVerdict.classList.add("gate-image-only");
+      const summary = (res.image_request_summary || "").trim();
+      gateVerdict.innerHTML =
+        `<p class="gate-verdict-heading"><strong>Image-only request — stop here.</strong></p>` +
+        `<p>This request is only about the article's image, so no Discord lookup or Claude web-search run is needed. Route it to whoever handles image corrections.</p>` +
+        (summary
+          ? `<p class="gate-verdict-detail"><strong>What the sender said about the image:</strong> ${escapeHtml(summary)}</p>`
+          : "");
+    } else if (res.gate_passed) {
+      gateVerdict.classList.add("gate-pass");
+      const hintBits = [];
+      if (res.article_url_hint) hintBits.push(`URL: ${res.article_url_hint}`);
+      if (res.article_title_hint) hintBits.push(`Title: "${res.article_title_hint}"`);
+      gateVerdict.textContent =
+        "Both scores above 4 — proceed to step 2." +
+        (hintBits.length ? `  (${hintBits.join(" · ")})` : "");
+    } else {
+      gateVerdict.classList.add("gate-fail");
+      gateVerdict.textContent =
+        "At least one score is 4 or lower — skipping the remaining steps. Re-assess or handle manually.";
+    }
   }
 
   // ── Step 1: Email → Assess ──────────────────────────────────────
@@ -249,49 +558,26 @@
     lockStep(steps.result);
 
     try {
-      const res = await postJSON("/api/corrections/assess", data);
+      const res = await postJSON("/api/corrections/assess", {
+        ...data,
+        gmail_message_id: state.gmail_message_id || "",
+      });
       state.email = data;
       state.assess = res;
 
-      scoreCRVS.textContent = res.CRVS;
-      scoreSAS.textContent = res.SAS;
-      meterCRVS.style.width = `${(res.CRVS / 10) * 100}%`;
-      meterSAS.style.width = `${(res.SAS / 10) * 100}%`;
-      reasonCRVS.textContent = res.crvs_reasoning || "";
-      reasonSAS.textContent = res.sas_reasoning || "";
-      assessResult.hidden = false;
+      renderAssessResult(res);
 
-      gateVerdict.classList.remove("gate-pass", "gate-fail", "gate-image-only");
       if (res.gate_passed && res.image_only) {
-        // Short-circuit: image-only request → skip the rest of the wizard.
-        gateVerdict.classList.add("gate-image-only");
-        const summary = (res.image_request_summary || "").trim();
-        gateVerdict.innerHTML =
-          `<p class="gate-verdict-heading"><strong>Image-only request — stop here.</strong></p>` +
-          `<p>This request is only about the article's image, so no Discord lookup or Claude web-search run is needed. Route it to whoever handles image corrections.</p>` +
-          (summary
-            ? `<p class="gate-verdict-detail"><strong>What the sender said about the image:</strong> ${escapeHtml(summary)}</p>`
-            : "");
         setStepState(steps.email, "done");
         lockStep(steps.discord);
         lockStep(steps.cms);
         lockStep(steps.result);
         setStatus(assessStatus, "Image-only — no further steps required.", "ok");
       } else if (res.gate_passed) {
-        gateVerdict.classList.add("gate-pass");
-        const hintBits = [];
-        if (res.article_url_hint) hintBits.push(`URL: ${res.article_url_hint}`);
-        if (res.article_title_hint) hintBits.push(`Title: "${res.article_title_hint}"`);
-        gateVerdict.textContent =
-          "Both scores above 4 — proceed to step 2." +
-          (hintBits.length ? `  (${hintBits.join(" · ")})` : "");
         setStepState(steps.email, "done");
         unlockStep(steps.discord);
         setStatus(assessStatus, "", "ok");
       } else {
-        gateVerdict.classList.add("gate-fail");
-        gateVerdict.textContent =
-          "At least one score is 4 or lower — skipping the remaining steps. Re-assess or handle manually.";
         setStepState(steps.email, "blocked");
         setStatus(assessStatus, "Gate not passed.", "error");
       }
@@ -311,12 +597,74 @@
   const locatorRunBtn = document.getElementById("locator-run-btn");
   const locatorStatus = document.getElementById("locator-status");
   const locatorTrace = document.getElementById("locator-trace");
+  const locatorWarning = document.getElementById("locator-warning");
+  const locatorMatchSource = document.getElementById("locator-match-source");
+
+  function clearLocatorBanners() {
+    if (locatorWarning) {
+      locatorWarning.hidden = true;
+      locatorWarning.innerHTML = "";
+    }
+    if (locatorMatchSource) {
+      locatorMatchSource.hidden = true;
+      locatorMatchSource.innerHTML = "";
+    }
+  }
+
+  function renderLocatorMatchSource(res) {
+    if (!locatorMatchSource) return;
+    if (!res || !res.found) {
+      locatorMatchSource.hidden = true;
+      locatorMatchSource.innerHTML = "";
+      return;
+    }
+    const label = res.match_source_label || res.match_source || "";
+    const n = res.match_word_count;
+    const words = Array.isArray(res.match_words) ? res.match_words.join(" ") : "";
+    const bits = [];
+    if (label) bits.push(`<strong>How we found it:</strong> ${escapeHtml(label)}`);
+    if (n && words) {
+      bits.push(
+        `<span class="muted">first ${n} words — <code>${escapeHtml(words)}</code></span>`
+      );
+    }
+    locatorMatchSource.innerHTML = bits.join("  ");
+    locatorMatchSource.hidden = bits.length === 0;
+  }
+
+  function renderLocatorGoogleWarning(res) {
+    if (!locatorWarning) return;
+    if (!res || !res.found || !res.google_search_warning) {
+      locatorWarning.hidden = true;
+      locatorWarning.innerHTML = "";
+      return;
+    }
+    const query = res.google_query || "";
+    const queryLine = query
+      ? `<div class="locator-warning-detail">Google query: <code>${escapeHtml(query)}</code></div>`
+      : "";
+    locatorWarning.innerHTML = `
+      <div class="locator-warning-head">
+        <strong>⚠ This match came from a Google search — verify before proceeding.</strong>
+      </div>
+      <div class="locator-warning-detail">
+        We couldn't match the sender-quoted title or the hoodline.com URL in
+        the email directly, so we asked Claude for a search query and picked
+        from the top Google results. Double-check the CMS edit link actually
+        corresponds to the article the sender is referring to.
+      </div>
+      ${queryLine}
+    `;
+    locatorWarning.hidden = false;
+  }
 
   function setDiscordResolved({ article_id, cms_edit_url }) {
     articleIdEl.textContent = article_id ?? "—";
     editUrlLink.textContent = cms_edit_url;
     editUrlLink.href = cms_edit_url;
     cmsEditBtn.href = cms_edit_url;
+    cmsEditBtn.removeAttribute("aria-disabled");
+    cmsEditBtn.classList.remove("btn-disabled");
     discordResult.hidden = false;
     state.discord = { found: true, article_id, cms_edit_url };
     setStepState(steps.discord, "done");
@@ -356,21 +704,56 @@
     locatorTrace.hidden = false;
   }
 
+  async function refreshDiscordCacheIncremental() {
+    try {
+      const resp = await fetch("/api/discord/refresh-incremental", {
+        method: "POST",
+      });
+      const text = await resp.text();
+      let payload;
+      try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = {}; }
+      if (!resp.ok) {
+        return { ok: false, detail: payload.detail || `HTTP ${resp.status}` };
+      }
+      return { ok: true, payload };
+    } catch (err) {
+      return { ok: false, detail: err && err.message ? err.message : String(err) };
+    }
+  }
+
   locatorRunBtn.addEventListener("click", async () => {
     if (!state.email) {
       setStatus(locatorStatus, "Run step 1 first.", "error");
       return;
     }
 
-    setStatus(locatorStatus, "Locating article… (may scrape via Decodo)", "info");
+    locatorRunBtn.disabled = true;
     locatorTrace.hidden = true;
     locatorTrace.innerHTML = "";
+    clearLocatorBanners();
+
+    // Fire an incremental Discord-cache refresh before the locate so a
+    // freshly-posted editor message lands in editorial_posts in time.
+    setStatus(locatorStatus, "Refreshing Discord cache (new messages only)…", "info");
+    const refresh = await refreshDiscordCacheIncremental();
+    if (refresh.ok && refresh.payload) {
+      const cached = refresh.payload.articles_cached ?? 0;
+      const scanned = refresh.payload.messages_scanned ?? 0;
+      console.info(
+        `discord refresh: ${cached} new article(s) cached, ${scanned} message(s) scanned`
+      );
+    } else if (!refresh.ok) {
+      console.warn("Discord refresh failed, continuing with locate:", refresh.detail);
+    }
+
+    setStatus(locatorStatus, "Locating article… (may scrape via Decodo)", "info");
 
     const payload = {
       subject: state.email.subject || "",
       body: state.email.body || "",
       article_url_hint: (state.assess && state.assess.article_url_hint) || "",
       article_title_hint: (state.assess && state.assess.article_title_hint) || "",
+      gmail_message_id: state.gmail_message_id || "",
     };
 
     try {
@@ -378,11 +761,15 @@
       renderLocatorTrace(res.trace);
 
       if (res.found && res.cms_edit_url) {
+        const sourceLabel = res.match_source_label || res.match_source || "";
+        const sourceSuffix = sourceLabel ? ` — ${sourceLabel}` : "";
         setStatus(
           locatorStatus,
-          `Found article #${res.article_id} via "${res.authoritative_title}".`,
+          `Found article #${res.article_id} via "${res.authoritative_title}"${sourceSuffix}.`,
           "ok"
         );
+        renderLocatorMatchSource(res);
+        renderLocatorGoogleWarning(res);
         setDiscordResolved({
           article_id: res.article_id,
           cms_edit_url: res.cms_edit_url,
@@ -396,6 +783,8 @@
       }
     } catch (err) {
       setStatus(locatorStatus, `Error: ${err.message}`, "error");
+    } finally {
+      locatorRunBtn.disabled = false;
     }
   });
 
@@ -409,7 +798,10 @@
 
     setStatus(discordStatus, "Extracting edit URL…", "info");
     try {
-      const res = await postJSON("/api/corrections/parse-discord", data);
+      const res = await postJSON("/api/corrections/parse-discord", {
+        ...data,
+        gmail_message_id: state.gmail_message_id || "",
+      });
       state.discord = res;
 
       if (!res.found) {
@@ -428,6 +820,8 @@
       editUrlLink.textContent = res.cms_edit_url;
       editUrlLink.href = res.cms_edit_url;
       cmsEditBtn.href = res.cms_edit_url;
+      cmsEditBtn.removeAttribute("aria-disabled");
+      cmsEditBtn.classList.remove("btn-disabled");
       discordResult.hidden = false;
 
       setStepState(steps.discord, "done");
@@ -463,6 +857,7 @@
     const payload = {
       ...state.email,
       ...cmsData,
+      gmail_message_id: state.gmail_message_id || "",
     };
 
     setStatus(
@@ -484,6 +879,7 @@
       unlockStep(steps.result);
       setStepState(steps.result, "done");
       setStatus(generateStatus, "", "ok");
+      showMarkCorrectedIfEligible("completed");
     } catch (err) {
       setStatus(generateStatus, `Error: ${err.message}`, "error");
     }
@@ -639,4 +1035,86 @@
   copyRawBtn.addEventListener("click", () => {
     copyToClipboard(generateRaw.textContent, copyRawBtn);
   });
+
+  // ── Mark corrected + deep-link restore ─────────────────────────
+  const markCorrectedWrap = document.getElementById("mark-corrected-wrap");
+  const markCorrectedBtn = document.getElementById("mark-corrected-btn");
+  const markCorrectedStatus = document.getElementById("mark-corrected-status");
+
+  function showMarkCorrectedIfEligible(wizardStatus) {
+    if (!markCorrectedWrap) return;
+    const canMark =
+      !!state.gmail_message_id &&
+      wizardStatus !== "corrected" &&
+      (wizardStatus === "completed" || !!state.generate);
+    markCorrectedWrap.hidden = !canMark;
+    if (wizardStatus === "corrected") {
+      setStatus(markCorrectedStatus, "Already marked as corrected.", "ok");
+      markCorrectedBtn.disabled = true;
+    } else {
+      setStatus(markCorrectedStatus, "", "");
+      markCorrectedBtn.disabled = false;
+    }
+  }
+
+  if (markCorrectedBtn) {
+    markCorrectedBtn.addEventListener("click", async () => {
+      if (!state.gmail_message_id) {
+        setStatus(markCorrectedStatus, "No Gmail message associated.", "error");
+        return;
+      }
+      markCorrectedBtn.disabled = true;
+      setStatus(markCorrectedStatus, "Marking as corrected…", "info");
+      try {
+        const resp = await fetch(
+          `/api/corrections/wizard/${encodeURIComponent(state.gmail_message_id)}/mark-corrected`,
+          { method: "POST" }
+        );
+        const text = await resp.text();
+        let payload;
+        try { payload = JSON.parse(text); } catch (_) { payload = { detail: text }; }
+        if (!resp.ok) throw new Error(payload.detail || `HTTP ${resp.status}`);
+        setStatus(markCorrectedStatus, "Marked as corrected.", "ok");
+      } catch (err) {
+        markCorrectedBtn.disabled = false;
+        setStatus(markCorrectedStatus, `Error: ${err.message}`, "error");
+      }
+    });
+  }
+
+  async function autoRestoreFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const mid = params.get("gmail_message_id");
+    if (!mid) return;
+
+    try {
+      const resp = await fetch(
+        `/api/corrections/wizard/${encodeURIComponent(mid)}`
+      );
+      if (!resp.ok) return;
+      const record = await resp.json();
+
+      state.gmail_message_id = record.gmail_message_id || mid;
+
+      emailForm.querySelector('[name="sender_name"]').value = record.sender_name || "";
+      emailForm.querySelector('[name="sender_email"]').value = record.sender_email || "";
+      emailForm.querySelector('[name="subject"]').value = record.subject || "";
+      emailForm.querySelector('[name="body"]').value = record.body || record.snippet || "";
+
+      state.email = {
+        sender_name: record.sender_name || "",
+        sender_email: record.sender_email || "",
+        subject: record.subject || "",
+        body: record.body || record.snippet || "",
+      };
+
+      restoreWizardState(record.state || {}, record.status || "new");
+      showMarkCorrectedIfEligible(record.status);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (err) {
+      console.error("Deep-link restore failed", err);
+    }
+  }
+
+  autoRestoreFromUrl();
 })();

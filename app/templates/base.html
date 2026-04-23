@@ -3,42 +3,140 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{% block title %}Hoodline Dashboard{% endblock %}</title>
+  <title>{% block title %}Hoodline Corrections{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: { DEFAULT: '#16181a', soft: '#2a2d30' },
+            paper: '#f7f5ef',
+            surface: '#ffffff',
+            alt: '#fbfaf6',
+            line: { DEFAULT: '#d9d6ce', soft: '#e7e4dc' },
+            muted: { DEFAULT: '#6b6e72', 2: '#8b8e92' },
+            brick: { DEFAULT: '#b4401c', soft: '#faeee7', deep: '#933218' },
+            ok: { DEFAULT: '#2f6b46', soft: '#e6efe8' },
+            warn: { DEFAULT: '#8a5a10', soft: '#f6ecd7' },
+            err: { DEFAULT: '#a3321f', soft: '#f6e2dc' },
+            info: { DEFAULT: '#20588a', soft: '#e3ecf4' },
+          },
+          fontFamily: {
+            display: ['"Iowan Old Style"', '"Palatino Linotype"', 'Palatino', 'Georgia', 'serif'],
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
+            mono: ['"SF Mono"', '"JetBrains Mono"', 'ui-monospace', 'Menlo', 'Consolas', 'monospace'],
+          },
+          boxShadow: {
+            panel: '0 1px 0 rgba(22, 24, 26, 0.04)',
+            menu: '0 12px 32px rgba(22, 24, 26, 0.14)',
+          },
+          letterSpacing: {
+            kicker: '0.14em',
+          },
+        },
+      },
+    };
+  </script>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
-<body>
-  <div class="bg-shape bg-a"></div>
-  <div class="bg-shape bg-b"></div>
+<body class="min-h-screen bg-paper text-ink font-sans antialiased">
+  <header class="sticky top-0 z-30 bg-surface border-b border-line">
+    <div class="w-[min(1200px,95vw)] mx-auto grid grid-cols-[auto_1fr_auto] items-center gap-7 py-3 max-md:grid-cols-1 max-md:gap-3">
+      <a href="/" class="flex flex-col leading-none pr-6 border-r border-line-soft text-ink no-underline max-md:border-r-0 max-md:pr-0">
+        <span class="font-display font-bold text-[1.55rem] tracking-tight">Hoodline</span>
+        <span class="mt-1 text-[0.7rem] font-medium tracking-kicker uppercase text-muted">Correction Operations</span>
+      </a>
 
-  <header class="site-header">
-    <div class="brand">
-      <p class="kicker">Hoodline Inquiries</p>
-      <a href="/" class="brand-link">Correction Ops Dashboard</a>
-      {% if current_user %}
-      <p class="muted user-meta">Signed in as <strong>{{ current_user.username }}</strong> ({{ current_user.role }})</p>
-      {% endif %}
+      <nav class="max-md:overflow-x-auto" aria-label="Primary">
+        <ul class="flex gap-1.5 items-center flex-wrap list-none m-0 p-0">
+          {% if is_admin %}
+          <li>
+            <a href="/corrections"
+               class="nav-link inline-flex items-center gap-1 px-3 py-2 text-sm font-medium rounded text-ink-soft hover:text-ink hover:bg-alt no-underline {% if request.url.path == '/corrections' %}is-current text-ink{% endif %}">
+              Corrections Wizard
+            </a>
+          </li>
+          <li>
+            <a href="/requests"
+               class="nav-link inline-flex items-center gap-1 px-3 py-2 text-sm font-medium rounded text-ink-soft hover:text-ink hover:bg-alt no-underline {% if request.url.path == '/requests' %}is-current text-ink{% endif %}">
+              Correction Queue
+            </a>
+          </li>
+          <li class="nav-group relative">
+            <button type="button"
+                    class="nav-toggle inline-flex items-center gap-1 px-3 py-2 text-sm font-medium rounded bg-transparent border-0 cursor-pointer text-ink-soft hover:text-ink hover:bg-alt {% if request.url.path in ['/setup', '/schedule', '/pipeline'] %}is-current text-ink{% endif %}"
+                    aria-expanded="false" aria-controls="setup-submenu">
+              Setup
+              <span class="nav-caret text-[0.65rem] opacity-70 transition-transform" aria-hidden="true">▾</span>
+            </button>
+            <ul id="setup-submenu" role="menu"
+                class="nav-submenu absolute top-[calc(100%+8px)] left-0 min-w-[220px] hidden bg-surface border border-line rounded shadow-menu p-1.5 m-0 list-none z-40 max-md:static max-md:shadow-none max-md:border-0 max-md:border-l-2 max-md:border-brick max-md:mt-1 max-md:ml-2">
+              <li role="none"><a href="/setup" role="menuitem" class="block px-2.5 py-2 rounded text-sm text-ink-soft hover:bg-alt hover:text-ink no-underline {% if request.url.path == '/setup' %}!text-brick !bg-brick-soft{% endif %}">Setup Guide</a></li>
+              <li role="none"><a href="/schedule" role="menuitem" class="block px-2.5 py-2 rounded text-sm text-ink-soft hover:bg-alt hover:text-ink no-underline {% if request.url.path == '/schedule' %}!text-brick !bg-brick-soft{% endif %}">Dev Schedule</a></li>
+              <li role="none"><a href="/pipeline" role="menuitem" class="block px-2.5 py-2 rounded text-sm text-ink-soft hover:bg-alt hover:text-ink no-underline {% if request.url.path == '/pipeline' %}!text-brick !bg-brick-soft{% endif %}">Pipeline Tester</a></li>
+            </ul>
+          </li>
+          <li>
+            <a href="/users"
+               class="nav-link inline-flex items-center gap-1 px-3 py-2 text-sm font-medium rounded text-ink-soft hover:text-ink hover:bg-alt no-underline {% if request.url.path == '/users' %}is-current text-ink{% endif %}">
+              Users
+            </a>
+          </li>
+          {% endif %}
+        </ul>
+      </nav>
+
+      <div class="flex items-center gap-3.5 text-sm max-md:order-3 max-md:justify-start">
+        {% if current_user %}
+        <div class="flex flex-col leading-tight text-right max-md:text-left">
+          <span class="font-semibold text-ink">{{ current_user.username }}</span>
+          <span class="text-[0.7rem] tracking-kicker uppercase text-muted">{{ current_user.role }}</span>
+        </div>
+        <a class="text-ink-soft no-underline border border-line rounded px-2.5 py-1.5 text-[0.82rem] font-medium hover:border-ink hover:text-ink" href="/logout">Sign out</a>
+        {% else %}
+        <a class="text-ink-soft no-underline border border-line rounded px-2.5 py-1.5 text-[0.82rem] font-medium hover:border-ink hover:text-ink" href="/login?next=/">Sign in</a>
+        {% endif %}
+      </div>
     </div>
-    <nav class="top-nav">
-      <a href="/">Home</a>
-      <a href="/schedule">Dev Schedule</a>
-      {% if is_admin %}
-      <a href="/corrections">Corrections Wizard</a>
-      <a href="/review">Review</a>
-      <a href="/pipeline">Pipeline Tester</a>
-      <a href="/setup">Setup Guide</a>
-      <a href="/users">Users</a>
-      {% endif %}
-      <a href="{{ cms_base_url }}" target="_blank" rel="noreferrer">Hoodline CMS</a>
-      {% if current_user %}
-      <a href="/logout">Logout</a>
-      {% else %}
-      <a href="/login?next=/">Login</a>
-      {% endif %}
-    </nav>
   </header>
 
-  <main class="layout">
+  <main class="w-[min(1200px,95vw)] mx-auto mt-6 mb-12 grid gap-4">
     {% block content %}{% endblock %}
   </main>
+
+  <script>
+    (function () {
+      const groups = document.querySelectorAll(".nav-group");
+      const closeAll = () => {
+        groups.forEach((g) => {
+          const t = g.querySelector(".nav-toggle");
+          const menu = g.querySelector(".nav-submenu");
+          if (t) t.setAttribute("aria-expanded", "false");
+          if (menu) menu.classList.add("hidden");
+        });
+      };
+      groups.forEach((group) => {
+        const toggle = group.querySelector(".nav-toggle");
+        const menu = group.querySelector(".nav-submenu");
+        if (!toggle || !menu) return;
+        toggle.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const open = toggle.getAttribute("aria-expanded") === "true";
+          closeAll();
+          if (!open) {
+            toggle.setAttribute("aria-expanded", "true");
+            menu.classList.remove("hidden");
+          }
+        });
+      });
+      document.addEventListener("click", (e) => {
+        if (!e.target.closest(".nav-group")) closeAll();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeAll();
+      });
+    })();
+  </script>
 </body>
 </html>

@@ -1,14 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Setup Guide | Hoodline{% endblock %}
 {% block content %}
-<section class="panel hero">
-  <h1>Setup Guide</h1>
-  <p>Administrative steps to get the Hoodline Correction Pipeline fully operational. Each section shows the current status based on live environment checks.</p>
+<section class="bg-surface border border-line rounded-md border-l-[3px] border-l-brick p-6 shadow-panel">
+  <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-1">Setup</p>
+  <h1 class="font-display font-semibold text-[2rem] leading-tight tracking-tight">Setup Guide</h1>
+  <p class="text-muted max-w-[68ch] mt-1">Administrative steps to get the Hoodline Correction Pipeline fully operational. Each section shows the current status based on live environment checks.</p>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Live Status Checks</h2>
-  <div class="checks-grid">
+  <div class="grid gap-2 mt-2">
     {% for check in checks %}
     <div class="check-row {{ 'check-ok' if check.ok else 'check-warn' }}">
       <span class="check-icon">{% if check.ok %}&#x2713;{% else %}!{% endif %}</span>
@@ -21,7 +22,7 @@
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 1: Docker &amp; Database</h2>
   <p class="muted">Status: <span class="status-done">Already done</span> if you're seeing this page.</p>
   <div class="setup-step">
@@ -41,7 +42,7 @@ DEFAULT_SUPERUSER_PASSWORD=billGAtes1!1</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 2: Anthropic API Key</h2>
   <p class="muted">Required for: Claude-powered classification (3.2), verification (3.5), and remediation (3.6).</p>
   <div class="setup-step">
@@ -68,7 +69,7 @@ DEFAULT_SUPERUSER_PASSWORD=billGAtes1!1</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 3: Gmail API Integration</h2>
   <p class="muted">Status: <span class="status-done">Configured</span> &mdash; delegated service account for contact@hoodline.com is active.</p>
   <div class="setup-step">
@@ -91,7 +92,7 @@ DEFAULT_SUPERUSER_PASSWORD=billGAtes1!1</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 4: Discord Integration</h2>
   <p class="muted">Required for: Article resolution (3.3) &mdash; finding which article a correction refers to.</p>
   <div class="setup-step">
@@ -143,7 +144,7 @@ DISCORD_CACHE_DAYS=90</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 5: Hoodline CMS API</h2>
   <p class="muted">Required for: Reading article content (3.4) and writing corrections (3.7).</p>
   <div class="setup-step">
@@ -193,7 +194,7 @@ CMS_API_KEY=your-api-key-here</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 6: Session Secret</h2>
   <p class="muted">Required for: Production deployment security.</p>
   <div class="setup-step">
@@ -206,7 +207,7 @@ APP_SESSION_SECRET=your-generated-secret-here</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 7: Create Editor Accounts</h2>
   <p class="muted">Required for: Review dashboard access.</p>
   <div class="setup-step">
@@ -227,7 +228,7 @@ APP_SESSION_SECRET=your-generated-secret-here</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 8: Test the Pipeline End-to-End</h2>
   <p class="muted">Recommended before enabling live Gmail intake or CMS writes.</p>
   <div class="setup-step">
@@ -250,7 +251,7 @@ APP_SESSION_SECRET=your-generated-secret-here</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Step 9: Go Live</h2>
   <p class="muted">Once all checks are green and you've tested end-to-end.</p>
   <div class="setup-step">
@@ -267,7 +268,7 @@ APP_SESSION_SECRET=your-generated-secret-here</pre>
   </div>
 </section>
 
-<section class="panel">
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
   <h2>Environment Variable Reference</h2>
   <div class="setup-step">
     <table class="setup-table env-table">

@@ -265,6 +265,68 @@ def assess_email(
     }
 
 
+SEARCH_QUERY_SYSTEM_PROMPT = """
+You help locate a Hoodline article from a reader's correction email.
+
+You are given the subject line and body of the correction email. Output ONE
+Google-style search query (4-8 words) that would surface the Hoodline article
+the sender is referring to — lean on unique proper nouns, place names,
+people, organizations, specific events, and distinctive phrases that appear
+in the email.
+
+Rules:
+- Output ONLY the query string. No quotes. No markdown. No prose.
+- DO NOT include the word "Hoodline" or any "site:" operator — the caller
+  appends those itself.
+- Never invent names that are not in the email.
+""".strip()
+
+
+def generate_search_query(*, subject: str, body: str) -> str:
+    """Ask Claude to propose a Google query that would find the article.
+
+    Returns the query string (without " hoodline" appended). Returns "" if
+    Claude produces nothing usable. Caller is expected to append " hoodline"
+    before running the actual Google search.
+    """
+    subject = (subject or "").strip()
+    body = (body or "").strip()
+    if not subject and not body:
+        return ""
+
+    model = os.getenv(
+        "CORRECTIONS_SEARCH_QUERY_MODEL",
+        os.getenv("CORRECTIONS_ASSESS_MODEL", "claude-haiku-4-5-20251001"),
+    )
+    timeout = float(os.getenv("CORRECTIONS_TIMEOUT_SECONDS", "60"))
+
+    user_prompt = (
+        "Subject:\n"
+        f"{subject or '(none)'}\n\n"
+        "Body:\n"
+        f"{body or '(none)'}"
+    )
+
+    payload = {
+        "model": model,
+        "max_tokens": 120,
+        "temperature": 0,
+        "system": SEARCH_QUERY_SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+
+    data = _http_post_messages(payload, timeout=timeout)
+    text = _collect_text(data).strip()
+
+    # Strip accidental wrapping quotes / backticks / stray "site:" or
+    # "hoodline" the model might add despite instructions.
+    text = text.strip("`'\"")
+    text = re.sub(r"\s+site:\S+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bhoodline(?:\.com)?\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
+
+
 def extract_cms_edit_link(discord_message: str) -> dict[str, Any]:
     """Pull the Hoodline CMS edit link (and article ID) out of a pasted Discord message."""
     text = discord_message or ""

@@ -1,46 +1,47 @@
 {% extends "base.html" %}
-{% block title %}Review Dashboard | Hoodline{% endblock %}
+{% block title %}Review | Hoodline Corrections{% endblock %}
 {% block content %}
-<section class="panel">
-  <div class="row-between wrap">
+<section class="bg-surface border border-line rounded-md border-l-[3px] border-l-brick p-6 shadow-panel">
+  <div class="flex flex-wrap justify-between items-start gap-4">
     <div>
-      <h1>Review Dashboard</h1>
-      <p class="muted">Pending correction cases for editor review. Each case assembles data from the full pipeline.</p>
+      <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-1">Legacy</p>
+      <h1 class="font-display font-semibold text-[2rem] leading-tight tracking-tight">Review Dashboard</h1>
+      <p class="text-muted max-w-[68ch] mt-1">Pending correction cases for editor review. Each case assembles data from the full pipeline.</p>
     </div>
-    <div class="review-filters">
-      <button class="btn ghost filter-btn active" data-filter="pending">Pending</button>
-      <button class="btn ghost filter-btn" data-filter="reviewed">Reviewed</button>
-      <button class="btn ghost filter-btn" data-filter="">All</button>
+    <div class="flex gap-1.5 review-filters">
+      <button class="filter-btn active bg-surface border border-line rounded px-3 py-1.5 text-sm font-medium hover:bg-alt hover:border-ink" data-filter="pending">Pending</button>
+      <button class="filter-btn bg-surface border border-line rounded px-3 py-1.5 text-sm font-medium hover:bg-alt hover:border-ink" data-filter="reviewed">Reviewed</button>
+      <button class="filter-btn bg-surface border border-line rounded px-3 py-1.5 text-sm font-medium hover:bg-alt hover:border-ink" data-filter="">All</button>
     </div>
   </div>
 </section>
 
-<div id="cases-container" class="cases-stack">
-  <p class="muted" id="cases-loading">Loading cases...</p>
+<div id="cases-container" class="cases-stack grid gap-3.5">
+  <p class="text-muted" id="cases-loading">Loading cases...</p>
 </div>
 
 <template id="case-template">
-  <article class="panel case-card" data-run-id="">
-    <div class="row-between wrap case-header">
+  <article class="case-card bg-surface border border-line rounded-md p-6 shadow-panel overflow-hidden" data-run-id="">
+    <div class="flex flex-wrap justify-between items-center gap-3 case-header mb-3">
       <div>
-        <h2 class="case-title"></h2>
-        <p class="muted case-meta"></p>
+        <h2 class="case-title font-display font-semibold text-[1.2rem] m-0"></h2>
+        <p class="case-meta text-muted text-[0.88rem] m-0"></p>
       </div>
-      <div class="case-badges">
+      <div class="case-badges flex gap-1.5 flex-wrap">
         <span class="pill case-confidence"></span>
         <span class="pill case-action-rec"></span>
         <span class="pill case-status"></span>
       </div>
     </div>
 
-    <div class="grid two case-body">
+    <div class="grid md:grid-cols-[1.2fr_1fr] gap-3 case-body mb-3.5">
       <div class="case-left">
         <details class="case-section" open>
           <summary>Original Email</summary>
           <div class="case-email">
             <p><strong>From:</strong> <span class="email-sender"></span></p>
             <p><strong>Subject:</strong> <span class="email-subject"></span></p>
-            <pre class="email-body"></pre>
+            <pre class="email-body-text"></pre>
           </div>
         </details>
 
@@ -48,7 +49,7 @@
           <summary>Detected Article</summary>
           <div class="case-article">
             <p class="article-headline"></p>
-            <p class="muted"><a class="article-link" href="#" target="_blank">View article</a>
+            <p class="text-muted"><a class="article-link" href="#" target="_blank">View article</a>
               <span class="article-preview-link"></span>
             </p>
           </div>
@@ -59,7 +60,7 @@
           <div class="case-claim">
             <p><strong>Claim:</strong> <span class="claim-text"></span></p>
             <p><strong>Proposed correction:</strong> <span class="claim-proposed"></span></p>
-            <p class="muted"><strong>Type:</strong> <span class="claim-type"></span></p>
+            <p class="text-muted"><strong>Type:</strong> <span class="claim-type"></span></p>
           </div>
         </details>
       </div>
@@ -75,7 +76,7 @@
         <details class="case-section" open>
           <summary>Staged Diff (Before / After)</summary>
           <div class="case-diff">
-            <p class="muted diff-field"></p>
+            <p class="diff-field text-muted"></p>
             <div class="diff-container">
               <div class="diff-before">
                 <span class="diff-label">Before</span>
@@ -97,13 +98,13 @@
     </div>
 
     <div class="case-actions">
-      <button class="btn action-btn" data-action="approve_publish">Approve &amp; Publish</button>
-      <button class="btn action-btn" data-action="edit_publish">Edit Note &amp; Publish</button>
-      <button class="btn ghost action-btn" data-action="reject">Reject</button>
-      <button class="btn ghost action-btn" data-action="send_back">Send Back for Re-verification</button>
-      <button class="btn ghost action-btn" data-action="escalate">Escalate to Eddie</button>
+      <button class="action-btn bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium hover:bg-black" data-action="approve_publish">Approve &amp; Publish</button>
+      <button class="action-btn bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium hover:bg-black" data-action="edit_publish">Edit Note &amp; Publish</button>
+      <button class="action-btn bg-surface border border-line rounded px-3.5 py-2 text-sm font-medium hover:bg-alt hover:border-ink" data-action="reject">Reject</button>
+      <button class="action-btn bg-surface border border-line rounded px-3.5 py-2 text-sm font-medium hover:bg-alt hover:border-ink" data-action="send_back">Send Back for Re-verification</button>
+      <button class="action-btn bg-surface border border-line rounded px-3.5 py-2 text-sm font-medium hover:bg-alt hover:border-ink" data-action="escalate">Escalate to Eddie</button>
       <label class="reviewer-notes-label">
-        <span class="muted">Reviewer notes (optional):</span>
+        <span class="text-muted">Reviewer notes (optional):</span>
         <input type="text" class="reviewer-notes-input" placeholder="Internal notes about this decision..." />
       </label>
     </div>

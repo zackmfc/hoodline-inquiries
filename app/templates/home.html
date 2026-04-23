@@ -1,59 +1,86 @@
 {% extends "base.html" %}
-{% block title %}Home | Hoodline Dashboard{% endblock %}
+{% block title %}Home | Hoodline Corrections{% endblock %}
 {% block content %}
-<section class="panel hero">
-  <h1>Application Control Center</h1>
-  <p>
-    Build and test the correction workflow here. The pipeline tester is admin-gated and executes one step at a time
-    with structured outputs and logs.
+<section class="bg-surface border border-line rounded-md border-l-[3px] border-l-brick p-6 shadow-panel">
+  <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-1">Dashboard</p>
+  <h1 class="font-display font-semibold text-[2rem] leading-tight tracking-tight">Correction Operations</h1>
+  <p class="text-muted max-w-[68ch] mt-1">
+    Review incoming reader corrections, run each through the wizard, and keep the queue moving.
+    Administrative tools live under the Setup menu.
   </p>
 </section>
 
-<section class="grid three">
+<section class="grid md:grid-cols-2 gap-4">
   {% if is_admin %}
-  <article class="panel card">
-    <h2>Corrections Wizard</h2>
-    <p>Paste an inbound correction email, score its validity and authority, pull the CMS edit link from Discord, then generate a web-search-backed correction with Claude.</p>
-    <a class="btn btn-accent" href="/corrections">Open Corrections Wizard</a>
+  <article class="bg-surface border border-line rounded-md p-6 shadow-panel flex flex-col gap-3">
+    <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-brick">Primary</p>
+    <h2 class="font-display font-semibold text-[1.35rem]">Corrections Wizard</h2>
+    <p class="text-muted text-[0.94rem] leading-relaxed flex-1">
+      Walk an inbound correction through assessment, article lookup, and Claude-assisted revision — one step at a time.
+    </p>
+    <div>
+      <a class="inline-flex items-center gap-1.5 bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium no-underline hover:bg-black" href="/corrections">
+        Open wizard →
+      </a>
+    </div>
+  </article>
+
+  <article class="bg-surface border border-line rounded-md p-6 shadow-panel flex flex-col gap-3">
+    <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-brick">Primary</p>
+    <h2 class="font-display font-semibold text-[1.35rem]">Correction Queue</h2>
+    <p class="text-muted text-[0.94rem] leading-relaxed flex-1">
+      Every inbound correction request, bucketed by status. Reopen any entry in the wizard with its prior state restored.
+    </p>
+    <div>
+      <a class="inline-flex items-center gap-1.5 bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium no-underline hover:bg-black" href="/requests">
+        Open queue →
+      </a>
+    </div>
   </article>
   {% else %}
-  <article class="panel card">
-    <h2>Corrections Wizard</h2>
-    <p>Admin role required.</p>
-    <span class="pill">Restricted</span>
+  <article class="bg-surface border border-line rounded-md p-6 shadow-panel">
+    <h2 class="font-display font-semibold text-[1.35rem]">Corrections Wizard</h2>
+    <p class="text-muted mt-1">Admin role required.</p>
+  </article>
+  <article class="bg-surface border border-line rounded-md p-6 shadow-panel">
+    <h2 class="font-display font-semibold text-[1.35rem]">Correction Queue</h2>
+    <p class="text-muted mt-1">Admin role required.</p>
   </article>
   {% endif %}
-
-  <article class="panel card">
-    <h2>Development Schedule</h2>
-    <p>Interactive timeline with checkbox progress and projected completion date.</p>
-    <a class="btn" href="/schedule">Open Schedule Tool</a>
-  </article>
-
-  {% if is_admin %}
-  <article class="panel card">
-    <h2>Pipeline Tester</h2>
-    <p>Run each pipeline stage sequentially, provide input data, and inspect outputs and logs.</p>
-    <a class="btn" href="/pipeline">Open Pipeline Tester</a>
-  </article>
-  {% else %}
-  <article class="panel card">
-    <h2>Pipeline Tester</h2>
-    <p>Admin role required.</p>
-    <span class="pill">Restricted</span>
-  </article>
-  {% endif %}
-
-  <article class="panel card">
-    <h2>Hoodline CMS</h2>
-    <p>Dedicated editor account will be used by Decodo automation and draft staging flow.</p>
-    <a class="btn" href="{{ cms_base_url }}" target="_blank" rel="noreferrer">Open CMS</a>
-  </article>
 </section>
 
-<section class="panel muted-panel">
-  <h2>Runtime Notes</h2>
-  <p>Accounts and roles are stored in PostgreSQL with encrypted password hashes.</p>
-  <p>Pipeline logs are written to <code>logs/pipeline.log</code> and per-run logs in <code>logs/runs/</code>.</p>
+{% if is_admin %}
+<section class="bg-surface border border-line rounded-md p-6 shadow-panel">
+  <div class="flex items-baseline justify-between gap-3 mb-4">
+    <h2 class="font-display font-semibold text-[1.15rem]">Setup &amp; tooling</h2>
+    <p class="text-[0.78rem] tracking-kicker uppercase text-muted">Admin</p>
+  </div>
+  <ul class="grid md:grid-cols-3 gap-3 list-none p-0 m-0">
+    <li>
+      <a href="/setup" class="block border border-line rounded p-4 no-underline text-ink hover:bg-alt hover:border-ink-soft">
+        <span class="block font-display font-semibold text-base mb-1">Setup Guide</span>
+        <span class="text-[0.86rem] text-muted leading-snug">Environment checks, onboarding steps, credential rotation.</span>
+      </a>
+    </li>
+    <li>
+      <a href="/schedule" class="block border border-line rounded p-4 no-underline text-ink hover:bg-alt hover:border-ink-soft">
+        <span class="block font-display font-semibold text-base mb-1">Dev Schedule</span>
+        <span class="text-[0.86rem] text-muted leading-snug">Interactive build timeline with projected completion.</span>
+      </a>
+    </li>
+    <li>
+      <a href="/pipeline" class="block border border-line rounded p-4 no-underline text-ink hover:bg-alt hover:border-ink-soft">
+        <span class="block font-display font-semibold text-base mb-1">Pipeline Tester</span>
+        <span class="text-[0.86rem] text-muted leading-snug">Run each correction-system step in sequence with structured outputs.</span>
+      </a>
+    </li>
+  </ul>
+</section>
+{% endif %}
+
+<section class="bg-alt border border-line rounded-md p-6">
+  <h2 class="font-display font-semibold text-[1.15rem] mb-2">Runtime notes</h2>
+  <p class="text-[0.92rem] text-muted">Accounts and roles live in PostgreSQL with encrypted password hashes.</p>
+  <p class="text-[0.92rem] text-muted">Pipeline logs write to <code class="font-mono text-[0.84rem] bg-surface border border-line rounded px-1.5 py-0.5">logs/pipeline.log</code> and per-run logs in <code class="font-mono text-[0.84rem] bg-surface border border-line rounded px-1.5 py-0.5">logs/runs/</code>.</p>
 </section>
 {% endblock %}

@@ -67,7 +67,7 @@ class GmailClient:
             userId="me",
             q=q,
             labelIds=label_ids or None,
-            maxResults=max(1, min(max_results, 50)),
+            maxResults=max(1, min(max_results, 100)),
         )
         listing = request.execute()
         messages = listing.get("messages", [])

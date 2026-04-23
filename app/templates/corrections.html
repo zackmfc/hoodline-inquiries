@@ -1,238 +1,275 @@
 {% extends "base.html" %}
-{% block title %}Corrections Wizard | Hoodline Dashboard{% endblock %}
+{% block title %}Corrections Wizard | Hoodline Corrections{% endblock %}
 {% block content %}
-<section class="panel hero">
-  <h1>Corrections Wizard</h1>
-  <p>
-    Walk a reader correction request through assessment, article lookup, and Claude-assisted revision —
-    one step at a time. Steps unlock as you complete the one above.
+<section class="bg-surface border border-line rounded-md border-l-[3px] border-l-brick p-6 shadow-panel">
+  <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-1">Wizard</p>
+  <h1 class="font-display font-semibold text-[2rem] leading-tight tracking-tight">Corrections Wizard</h1>
+  <p class="text-muted max-w-[68ch] mt-1">
+    Walk a reader correction request through assessment, article lookup, and Claude-assisted revision — one step at a time.
+    Steps unlock as you complete the one above.
   </p>
 </section>
 
-<section class="panel corrections-step" id="step-email" data-state="active">
-  <header class="corrections-step-head">
+<section class="corrections-step bg-surface border border-line rounded-md p-6 shadow-panel transition-opacity" id="step-email" data-state="active">
+  <header class="corrections-step-head grid grid-cols-[auto_1fr_auto] items-center gap-3.5 mb-4 pb-4 border-b border-line-soft">
     <span class="corrections-step-num">1</span>
     <div>
-      <h2>Email details</h2>
-      <p class="muted">The inbound correction request. Name is optional; everything else helps.</p>
+      <h2 class="font-display font-semibold text-[1.35rem] m-0">Email details</h2>
+      <p class="text-muted text-[0.9rem] mt-0.5">The inbound correction request. Name is optional; everything else helps.</p>
     </div>
     <span class="pill step-state">Pending</span>
   </header>
 
-  <div class="inbox-picker" id="inbox-picker">
-    <div class="inbox-picker-head">
+  <div class="inbox-picker border border-line rounded-md p-4 bg-alt mb-4 grid gap-3" id="inbox-picker">
+    <div class="inbox-picker-head flex justify-between items-end gap-3.5 flex-wrap">
       <div>
-        <h3>Pull from Gmail queue</h3>
-        <p class="muted">Unread messages on <code>contact@hoodline.com</code> labeled <code>auto/correction-candidate</code>.</p>
+        <h3 class="font-display font-semibold text-base m-0">Pull from Gmail queue</h3>
+        <p class="text-muted text-[0.86rem] mt-0.5">Unread messages on <code class="font-mono text-[0.82rem] bg-surface border border-line rounded px-1 py-0.5">contact@hoodline.com</code> labeled <code class="font-mono text-[0.82rem] bg-surface border border-line rounded px-1 py-0.5">auto/correction-candidate</code>.</p>
       </div>
-      <div class="inbox-picker-controls">
-        <label class="inbox-limit">
+      <div class="inbox-picker-controls flex gap-2.5 items-end flex-wrap">
+        <label class="inbox-limit grid gap-1 text-[0.82rem] text-muted">
           <span>How many?</span>
-          <select id="inbox-limit">
-            <option value="1">Last 1</option>
+          <select id="inbox-limit" class="border border-line rounded px-2.5 py-1.5 bg-surface text-ink text-[0.88rem]">
             <option value="5" selected>Last 5</option>
-            <option value="50">All (up to 50)</option>
+            <option value="10">Last 10</option>
+            <option value="20">Last 20</option>
+            <option value="30">Last 30</option>
+            <option value="50">Last 50</option>
+            <option value="100">Last 100</option>
           </select>
         </label>
-        <button type="button" class="btn ghost" id="inbox-fetch-btn">Fetch queue</button>
+        <label class="inbox-include-processed inline-flex items-center gap-1.5 text-[0.82rem] text-muted cursor-pointer">
+          <input type="checkbox" id="inbox-include-processed" class="accent-brick" />
+          <span>Include already-processed</span>
+        </label>
+        <button type="button" class="bg-surface border border-line rounded px-3.5 py-2 text-sm font-medium hover:bg-alt hover:border-ink" id="inbox-fetch-btn">Fetch queue</button>
+        <button type="button" class="bg-surface border border-err text-err rounded px-3.5 py-2 text-sm font-medium hover:bg-err-soft" id="inbox-clear-cache-btn" title="Wipe all wizard state — every email returns to new.">Clear wizard cache</button>
       </div>
     </div>
-    <p class="muted inbox-status" id="inbox-status"></p>
-    <ul class="inbox-list" id="inbox-list" hidden></ul>
+    <p class="inbox-status text-muted text-[0.86rem] m-0" id="inbox-status"></p>
+    <ul class="inbox-list list-none m-0 p-0 grid gap-2 max-h-[420px] overflow-auto" id="inbox-list" hidden></ul>
   </div>
 
-  <div class="form-divider"><span>or enter manually</span></div>
+  <div class="form-divider flex items-center gap-2.5 my-3 text-muted text-[0.76rem] uppercase tracking-kicker">
+    <span class="flex-1 h-px bg-line"></span>
+    <span>or enter manually</span>
+    <span class="flex-1 h-px bg-line"></span>
+  </div>
 
-  <form id="email-form" class="corrections-form">
-    <label class="field">
-      <span>Sender name <span class="muted">(optional)</span></span>
-      <input type="text" name="sender_name" autocomplete="off" />
+  <form id="email-form" class="corrections-form grid gap-3">
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Sender name <span class="text-muted font-normal">(optional)</span></span>
+      <input type="text" name="sender_name" autocomplete="off" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
     </label>
-    <label class="field">
-      <span>Sender email address</span>
-      <input type="email" name="sender_email" autocomplete="off" />
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Sender email address</span>
+      <input type="email" name="sender_email" autocomplete="off" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
     </label>
-    <label class="field">
-      <span>Subject line</span>
-      <input type="text" name="subject" autocomplete="off" />
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Subject line</span>
+      <input type="text" name="subject" autocomplete="off" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
     </label>
-    <label class="field">
-      <span>Email body</span>
-      <textarea name="body" rows="8"></textarea>
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Email body</span>
+      <textarea name="body" rows="8" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10 resize-y min-h-[72px]"></textarea>
     </label>
-    <div class="corrections-actions">
-      <button type="submit" class="btn btn-accent">Assess validity &amp; authority</button>
-      <span class="muted" id="assess-status"></span>
+    <div class="corrections-actions flex flex-wrap items-center gap-3 mt-1">
+      <button type="submit" class="inline-flex items-center justify-center gap-1.5 bg-brick text-white border border-brick rounded px-3.5 py-2 text-sm font-medium hover:bg-brick-deep hover:border-brick-deep">Assess validity &amp; authority</button>
+      <span class="text-muted text-[0.86rem]" id="assess-status"></span>
     </div>
   </form>
 
-  <div class="corrections-result" id="assess-result" hidden>
+  <div class="corrections-result mt-4 pt-4 border-t border-dashed border-line grid gap-3" id="assess-result" hidden>
     <div class="score-grid">
-      <div class="score-card">
-        <span class="score-label">Correction Request Validity Score</span>
-        <span class="score-value" id="score-crvs">–</span>
+      <div class="score-card border border-line rounded-md p-4 bg-surface grid gap-2">
+        <span class="text-[0.68rem] uppercase tracking-[0.12em] text-muted font-semibold">Correction Request Validity Score</span>
+        <span class="font-display font-semibold text-[2.4rem] leading-none text-ink" id="score-crvs">–</span>
         <div class="meter"><div class="meter-fill" id="meter-crvs"></div></div>
-        <p class="muted" id="reason-crvs"></p>
+        <p class="text-muted text-[0.84rem] leading-snug m-0" id="reason-crvs"></p>
       </div>
-      <div class="score-card">
-        <span class="score-label">Sender's Authority Score</span>
-        <span class="score-value" id="score-sas">–</span>
+      <div class="score-card border border-line rounded-md p-4 bg-surface grid gap-2">
+        <span class="text-[0.68rem] uppercase tracking-[0.12em] text-muted font-semibold">Sender's Authority Score</span>
+        <span class="font-display font-semibold text-[2.4rem] leading-none text-ink" id="score-sas">–</span>
         <div class="meter"><div class="meter-fill" id="meter-sas"></div></div>
-        <p class="muted" id="reason-sas"></p>
+        <p class="text-muted text-[0.84rem] leading-snug m-0" id="reason-sas"></p>
       </div>
     </div>
     <div id="gate-verdict" class="gate-verdict"></div>
   </div>
 </section>
 
-<section class="panel corrections-step" id="step-discord" data-state="locked">
-  <header class="corrections-step-head">
+<section class="corrections-step bg-surface border border-line rounded-md p-6 shadow-panel transition-opacity" id="step-discord" data-state="locked">
+  <header class="corrections-step-head grid grid-cols-[auto_1fr_auto] items-center gap-3.5 mb-4 pb-4 border-b border-line-soft">
     <span class="corrections-step-num">2</span>
     <div>
-      <h2>Locate the Discord message</h2>
-      <p class="muted">
+      <h2 class="font-display font-semibold text-[1.35rem] m-0">Locate the Discord message</h2>
+      <p class="text-muted text-[0.9rem] mt-0.5">
         Try auto-locating the editorial Discord post from the email — or paste the message manually below.
       </p>
     </div>
     <span class="pill step-state">Locked</span>
   </header>
 
-  <div class="locator-panel">
-    <div class="locator-head">
+  <div class="locator-panel border border-line rounded-md p-4 bg-alt mb-4 grid gap-2.5">
+    <div class="locator-head flex justify-between gap-3.5 flex-wrap items-end">
       <div>
-        <h3>Auto-locate from email</h3>
-        <p class="muted">Search Discord cache for the title; fall back to Google (via Decodo) + page scrape if needed.</p>
+        <h3 class="font-display font-semibold text-base m-0">Auto-locate from email</h3>
+        <p class="text-muted text-[0.86rem] mt-0.5">Search Discord cache for the title; fall back to Google (via Decodo) + page scrape if needed.</p>
       </div>
-      <button type="button" class="btn btn-accent" id="locator-run-btn">Run auto-locate</button>
+      <button type="button" class="inline-flex items-center gap-1.5 bg-brick text-white border border-brick rounded px-3.5 py-2 text-sm font-medium hover:bg-brick-deep hover:border-brick-deep" id="locator-run-btn">Run auto-locate</button>
     </div>
-    <p class="muted" id="locator-status"></p>
-    <ol class="locator-trace" id="locator-trace" hidden></ol>
+    <p class="text-muted text-[0.86rem] m-0" id="locator-status"></p>
+    <div class="locator-warning grid gap-1.5 p-3 border border-err bg-err-soft text-err rounded text-[0.9rem] leading-snug" id="locator-warning" hidden role="alert"></div>
+    <p class="locator-match-source m-0 p-2.5 border rounded text-[0.88rem] leading-snug text-ink border-ok/30 bg-ok-soft" id="locator-match-source" hidden></p>
+    <ol class="locator-trace list-none m-0 p-0 grid gap-1.5 text-[0.86rem]" id="locator-trace" hidden></ol>
   </div>
 
-  <div class="form-divider"><span>or paste manually</span></div>
+  <div class="form-divider flex items-center gap-2.5 my-3 text-muted text-[0.76rem] uppercase tracking-kicker">
+    <span class="flex-1 h-px bg-line"></span>
+    <span>or paste manually</span>
+    <span class="flex-1 h-px bg-line"></span>
+  </div>
 
-  <form id="discord-form" class="corrections-form">
-    <label class="field">
-      <span>Discord message content</span>
-      <textarea name="message" rows="5" placeholder="Paste the editor post here — we'll find the hoodline.impress3.com edit URL."></textarea>
+  <form id="discord-form" class="corrections-form grid gap-3">
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Discord message content</span>
+      <textarea name="message" rows="5" placeholder="Paste the editor post here — we'll find the hoodline.impress3.com edit URL." class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10 resize-y min-h-[72px]"></textarea>
     </label>
-    <div class="corrections-actions">
-      <button type="submit" class="btn">Find CMS edit link</button>
-      <span class="muted" id="discord-status"></span>
+    <div class="corrections-actions flex flex-wrap items-center gap-3 mt-1">
+      <button type="submit" class="bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium hover:bg-black">Find CMS edit link</button>
+      <span class="text-muted text-[0.86rem]" id="discord-status"></span>
     </div>
   </form>
 
-  <div class="corrections-result" id="discord-result" hidden>
-    <div class="result-row">
-      <span class="result-label">Article ID:</span>
-      <code id="article-id">—</code>
+  <div class="corrections-result mt-4 pt-4 border-t border-dashed border-line grid gap-3" id="discord-result" hidden>
+    <div class="result-row flex gap-2.5 items-center flex-wrap text-[0.92rem]">
+      <span class="text-[0.74rem] font-semibold uppercase tracking-[0.08em] text-muted">Article ID:</span>
+      <code class="font-mono text-[0.86rem] bg-alt border border-line rounded px-1.5 py-0.5" id="article-id">—</code>
     </div>
-    <div class="result-row">
-      <span class="result-label">Edit URL:</span>
-      <a id="edit-url-link" href="#" target="_blank" rel="noreferrer" class="mono">—</a>
+    <div class="result-row flex gap-2.5 items-center flex-wrap text-[0.92rem]">
+      <span class="text-[0.74rem] font-semibold uppercase tracking-[0.08em] text-muted">Edit URL:</span>
+      <a id="edit-url-link" href="#" target="_blank" rel="noreferrer" class="font-mono break-all text-ink-soft hover:text-ink">—</a>
     </div>
   </div>
 </section>
 
-<section class="panel corrections-step" id="step-cms" data-state="locked">
-  <header class="corrections-step-head">
+<section class="corrections-step bg-surface border border-line rounded-md p-6 shadow-panel transition-opacity" id="step-cms" data-state="locked">
+  <header class="corrections-step-head grid grid-cols-[auto_1fr_auto] items-center gap-3.5 mb-4 pb-4 border-b border-line-soft">
     <span class="corrections-step-num">3</span>
     <div>
-      <h2>Open the CMS, then fill in the article fields</h2>
-      <p class="muted">Log into the Hoodline CMS in a new tab, open the edit link, then paste each field below.</p>
+      <h2 class="font-display font-semibold text-[1.35rem] m-0">Open the CMS, then fill in the article fields</h2>
+      <p class="text-muted text-[0.9rem] mt-0.5">Log into the Hoodline CMS in a new tab, open the edit link, then paste each field below.</p>
     </div>
     <span class="pill step-state">Locked</span>
   </header>
 
-  <div class="corrections-actions cms-actions">
-    <a id="cms-login-btn" class="btn ghost" href="{{ cms_base_url }}" target="_blank" rel="noreferrer">
+  <div class="corrections-actions cms-actions flex flex-wrap items-center gap-3 mb-3">
+    <a id="cms-login-btn" class="bg-surface border border-line rounded px-3.5 py-2 text-sm font-medium text-ink no-underline hover:bg-alt hover:border-ink" href="{{ cms_base_url }}" target="_blank" rel="noreferrer">
       Open CMS login →
     </a>
-    <a id="cms-edit-btn" class="btn" href="#" target="_blank" rel="noreferrer" aria-disabled="true">
+    <a id="cms-edit-btn" class="bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium no-underline hover:bg-black" href="#" target="_blank" rel="noreferrer" aria-disabled="true">
       Open edit link →
     </a>
   </div>
 
   <form id="cms-form" class="corrections-form cms-form">
-    <label class="field">
-      <span>Title</span>
-      <input type="text" name="title" />
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Title</span>
+      <input type="text" name="title" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
     </label>
-    <label class="field">
-      <span>Meta Title</span>
-      <input type="text" name="meta_title" />
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Meta Title</span>
+      <input type="text" name="meta_title" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
     </label>
-    <label class="field">
-      <span>Meta Description</span>
-      <textarea name="meta_description" rows="2"></textarea>
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Meta Description</span>
+      <textarea name="meta_description" rows="2" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10 resize-y min-h-[72px]"></textarea>
     </label>
-    <label class="field">
-      <span>Excerpt</span>
-      <textarea name="excerpt" rows="3"></textarea>
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Excerpt</span>
+      <textarea name="excerpt" rows="3" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10 resize-y min-h-[72px]"></textarea>
     </label>
-    <label class="field">
-      <span>Body (HTML fragment)</span>
-      <textarea name="article_body" rows="10" class="mono"></textarea>
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Body (HTML fragment)</span>
+      <textarea name="article_body" rows="10" class="mono w-full border border-line rounded px-3 py-2 bg-surface font-mono text-[0.84rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10 resize-y min-h-[160px]"></textarea>
     </label>
-    <label class="field">
-      <span>Featured Image Attribution</span>
-      <input type="text" name="featured_image_attribution" />
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Featured Image Attribution</span>
+      <input type="text" name="featured_image_attribution" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
     </label>
-    <label class="field">
-      <span>Image URL</span>
-      <input type="url" name="image_url" />
+    <label class="field grid gap-1 text-[0.88rem]">
+      <span class="font-semibold text-ink">Image URL</span>
+      <input type="url" name="image_url" class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
     </label>
-    <div class="corrections-actions">
-      <button type="submit" class="btn btn-accent">Send to Claude with web search</button>
-      <span class="muted" id="generate-status"></span>
+    <div class="corrections-actions flex flex-wrap items-center gap-3 mt-1">
+      <button type="submit" class="inline-flex items-center gap-1.5 bg-brick text-white border border-brick rounded px-3.5 py-2 text-sm font-medium hover:bg-brick-deep hover:border-brick-deep">Send to Claude with web search</button>
+      <span class="text-muted text-[0.86rem]" id="generate-status"></span>
     </div>
   </form>
 </section>
 
-<section class="panel corrections-step" id="step-result" data-state="locked">
-  <header class="corrections-step-head">
+<section class="corrections-step bg-surface border border-line rounded-md p-6 shadow-panel transition-opacity" id="step-result" data-state="locked">
+  <header class="corrections-step-head grid grid-cols-[auto_1fr_auto] items-center gap-3.5 mb-4 pb-4 border-b border-line-soft">
     <span class="corrections-step-num">4</span>
     <div>
-      <h2>Correction proposal</h2>
-      <p class="muted">Claude's proposed edits — copy whichever fields you want to apply in the CMS.</p>
+      <h2 class="font-display font-semibold text-[1.35rem] m-0">Correction proposal</h2>
+      <p class="text-muted text-[0.9rem] mt-0.5">Claude's proposed edits — copy whichever fields you want to apply in the CMS.</p>
     </div>
     <span class="pill step-state">Locked</span>
   </header>
 
-  <div id="generate-summary" class="corrections-summary" hidden></div>
+  <div id="generate-summary" class="corrections-summary grid gap-2" hidden></div>
 
-  <div id="generate-fields" class="corrections-fields" hidden></div>
+  <div id="generate-fields" class="corrections-fields grid gap-2.5 mt-2.5" hidden></div>
 
-  <details class="corrections-raw" id="generate-raw-wrap" hidden>
-    <summary>Raw JSON</summary>
-    <div class="row-between">
-      <span class="muted">Full response from Claude</span>
-      <button type="button" class="btn ghost" id="copy-raw-btn">Copy JSON</button>
+  <details class="corrections-raw mt-3 border border-line rounded-md p-3 bg-surface" id="generate-raw-wrap" hidden>
+    <summary class="cursor-pointer font-semibold py-1">Raw JSON</summary>
+    <div class="flex justify-between items-center mt-2">
+      <span class="text-muted text-[0.86rem]">Full response from Claude</span>
+      <button type="button" class="bg-surface border border-line rounded px-3 py-1.5 text-sm font-medium hover:bg-alt hover:border-ink" id="copy-raw-btn">Copy JSON</button>
     </div>
-    <pre id="generate-raw" class="output-view mono"></pre>
+    <pre id="generate-raw" class="output-view mono mt-2"></pre>
   </details>
+
+  <div class="corrections-actions mark-corrected-actions flex flex-wrap items-center gap-3 mt-4 pt-3.5 border-t border-dashed border-line" id="mark-corrected-wrap" hidden>
+    <button type="button" class="inline-flex items-center gap-1.5 bg-brick text-white border border-brick rounded px-3.5 py-2 text-sm font-medium hover:bg-brick-deep hover:border-brick-deep" id="mark-corrected-btn">
+      Mark as corrected in CMS
+    </button>
+    <span class="text-muted text-[0.86rem]" id="mark-corrected-status"></span>
+  </div>
 </section>
 
 <template id="inbox-item-template">
-  <li class="inbox-item">
-    <button type="button" class="inbox-item-btn">
-      <div class="inbox-item-head">
-        <span class="inbox-item-subject"></span>
-        <span class="inbox-item-date muted"></span>
+  <li class="inbox-item flex flex-col border border-line rounded bg-surface">
+    <button type="button" class="inbox-item-btn grid gap-1 text-left border-0 bg-transparent px-3 py-2.5 cursor-pointer text-ink hover:bg-alt transition rounded-t">
+      <div class="inbox-item-head flex justify-between gap-3 items-baseline">
+        <span class="inbox-item-subject font-semibold text-[0.94rem] break-words"></span>
+        <span class="inbox-item-date text-muted text-[0.78rem] whitespace-nowrap"></span>
       </div>
-      <div class="inbox-item-sender muted"></div>
-      <div class="inbox-item-snippet"></div>
+      <div class="inbox-item-sender text-muted text-[0.82rem] break-words"></div>
+      <div class="inbox-item-snippet text-muted text-[0.84rem] leading-snug"></div>
+      <div class="inbox-item-status mt-1.5 flex flex-wrap items-center gap-2"></div>
     </button>
+    <div class="inbox-item-triage flex flex-wrap items-center gap-2 px-3 py-2 border-t border-line-soft bg-alt rounded-b">
+      <span class="text-[0.74rem] uppercase tracking-[0.1em] text-muted font-semibold mr-1">Triage:</span>
+      <button type="button" class="inbox-item-triage-pending bg-surface border border-ok text-ok rounded px-2.5 py-1 text-[0.82rem] font-medium hover:bg-ok-soft" title="Mark as a real correction request (Pending)">
+        Looks legit → Pending
+      </button>
+      <button type="button" class="inbox-item-triage-reject bg-surface border border-err text-err rounded px-2.5 py-1 text-[0.82rem] font-medium hover:bg-err-soft" title="Not a correction — newsletter, spam, etc.">
+        Not a correction → Reject
+      </button>
+      <span class="inbox-item-triage-status text-muted text-[0.8rem] ml-auto"></span>
+    </div>
   </li>
 </template>
 
 <template id="field-card-template">
-  <article class="field-card">
-    <header class="row-between">
-      <h3 class="field-card-title"></h3>
-      <button type="button" class="btn ghost field-card-copy">Copy</button>
+  <article class="field-card border border-line rounded-md bg-surface p-3.5 grid gap-2">
+    <header class="flex justify-between items-center gap-3">
+      <h3 class="field-card-title font-display font-semibold text-[0.96rem] m-0"></h3>
+      <button type="button" class="field-card-copy bg-surface border border-line rounded px-3 py-1.5 text-sm font-medium hover:bg-alt hover:border-ink">Copy</button>
     </header>
-    <pre class="field-card-value mono"></pre>
+    <pre class="field-card-value mono m-0 p-3 bg-alt border border-line rounded font-mono text-[0.85rem] max-h-[320px] overflow-auto whitespace-pre-wrap break-words"></pre>
   </article>
 </template>
 

@@ -211,6 +211,38 @@ class Storage:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS correction_wizard_emails (
+                        gmail_message_id TEXT PRIMARY KEY,
+                        gmail_thread_id TEXT,
+                        sender_raw TEXT NOT NULL DEFAULT '',
+                        sender_name TEXT NOT NULL DEFAULT '',
+                        sender_email TEXT NOT NULL DEFAULT '',
+                        subject TEXT NOT NULL DEFAULT '',
+                        snippet TEXT NOT NULL DEFAULT '',
+                        body TEXT NOT NULL DEFAULT '',
+                        received_at TIMESTAMPTZ,
+                        status TEXT NOT NULL DEFAULT 'new',
+                        state_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        last_touched_by TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_correction_wizard_emails_status
+                    ON correction_wizard_emails(status)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_correction_wizard_emails_updated
+                    ON correction_wizard_emails(updated_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS verification_events (
                         id BIGSERIAL PRIMARY KEY,
                         run_id TEXT REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
@@ -564,6 +596,32 @@ class Storage:
 
         return dict(row)
 
+    def latest_editorial_posted_at(self, *, source: str = "discord") -> datetime | None:
+        """Return the newest posted_at in editorial_posts for the given source.
+
+        Used by the incremental Discord cache refresh so we only scan Discord
+        messages posted after this timestamp instead of re-walking the full
+        90-day window.
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT MAX(posted_at) AS newest
+                    FROM editorial_posts
+                    WHERE source = %s
+                    """,
+                    (source,),
+                )
+                row = cur.fetchone()
+
+        if not row:
+            return None
+        value = row["newest"] if isinstance(row, dict) else row[0]
+        if isinstance(value, datetime):
+            return value
+        return None
+
     def list_editorial_posts(self, *, limit: int = 200) -> list[dict[str, Any]]:
         bounded_limit = max(1, min(limit, 1000))
         with self.connect() as conn:
@@ -906,6 +964,250 @@ class Storage:
         if row is None:
             raise RuntimeError("Failed to save review decision")
         return dict(row)
+
+    def upsert_wizard_email(
+        self,
+        *,
+        gmail_message_id: str,
+        gmail_thread_id: str | None,
+        sender_raw: str,
+        sender_name: str,
+        sender_email: str,
+        subject: str,
+        snippet: str,
+        body: str,
+        received_at: datetime | None,
+    ) -> None:
+        """Insert or update the base email record. Leaves state/status untouched on conflict."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO correction_wizard_emails (
+                        gmail_message_id, gmail_thread_id,
+                        sender_raw, sender_name, sender_email,
+                        subject, snippet, body, received_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (gmail_message_id)
+                    DO UPDATE SET
+                        gmail_thread_id = EXCLUDED.gmail_thread_id,
+                        sender_raw = EXCLUDED.sender_raw,
+                        sender_name = EXCLUDED.sender_name,
+                        sender_email = EXCLUDED.sender_email,
+                        subject = EXCLUDED.subject,
+                        snippet = EXCLUDED.snippet,
+                        body = EXCLUDED.body,
+                        received_at = EXCLUDED.received_at,
+                        updated_at = NOW()
+                    """,
+                    (
+                        gmail_message_id,
+                        gmail_thread_id,
+                        sender_raw,
+                        sender_name,
+                        sender_email,
+                        subject,
+                        snippet,
+                        body,
+                        received_at,
+                    ),
+                )
+
+    def save_wizard_step(
+        self,
+        *,
+        gmail_message_id: str,
+        step_key: str,
+        step_data: dict[str, Any],
+        status: str,
+        touched_by: str | None,
+    ) -> None:
+        """Merge a step's output into state_json and update status + touched_by."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO correction_wizard_emails (
+                        gmail_message_id, status, state_json, last_touched_by
+                    )
+                    VALUES (
+                        %s, %s, jsonb_build_object(%s::text, %s::jsonb), %s
+                    )
+                    ON CONFLICT (gmail_message_id)
+                    DO UPDATE SET
+                        status = EXCLUDED.status,
+                        state_json =
+                            COALESCE(correction_wizard_emails.state_json, '{}'::jsonb)
+                            || jsonb_build_object(%s::text, %s::jsonb),
+                        last_touched_by = EXCLUDED.last_touched_by,
+                        updated_at = NOW()
+                    """,
+                    (
+                        gmail_message_id,
+                        status,
+                        step_key,
+                        Jsonb(step_data),
+                        touched_by,
+                        step_key,
+                        Jsonb(step_data),
+                    ),
+                )
+
+    def get_wizard_email(self, gmail_message_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT gmail_message_id, gmail_thread_id,
+                           sender_raw, sender_name, sender_email,
+                           subject, snippet, body, received_at,
+                           status, state_json, last_touched_by,
+                           created_at, updated_at
+                    FROM correction_wizard_emails
+                    WHERE gmail_message_id = %s
+                    """,
+                    (gmail_message_id,),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def get_wizard_emails_by_ids(
+        self, message_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        if not message_ids:
+            return {}
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT gmail_message_id, status, state_json,
+                           last_touched_by, updated_at
+                    FROM correction_wizard_emails
+                    WHERE gmail_message_id = ANY(%s)
+                    """,
+                    (message_ids,),
+                )
+                rows = cur.fetchall()
+        return {row["gmail_message_id"]: dict(row) for row in rows}
+
+    def list_wizard_emails_by_statuses(
+        self,
+        *,
+        statuses: list[str],
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if not statuses:
+            return []
+        bounded_limit = max(1, min(limit, 500))
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT gmail_message_id, gmail_thread_id,
+                           sender_raw, sender_name, sender_email,
+                           subject, snippet, received_at,
+                           status, state_json, last_touched_by,
+                           created_at, updated_at
+                    FROM correction_wizard_emails
+                    WHERE status = ANY(%s)
+                    ORDER BY COALESCE(received_at, updated_at) DESC
+                    LIMIT %s
+                    """,
+                    (statuses, bounded_limit),
+                )
+                rows = cur.fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_wizard_emails(self) -> int:
+        """Delete every row in correction_wizard_emails. Returns rows removed.
+
+        Used by the "Clear wizard cache" button in the Corrections wizard so
+        the operator can start over with a fresh queue — every email
+        re-appears as status=new.
+        """
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM correction_wizard_emails")
+                return cur.rowcount or 0
+
+    def mark_wizard_corrected(
+        self,
+        *,
+        gmail_message_id: str,
+        touched_by: str | None,
+    ) -> bool:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE correction_wizard_emails
+                    SET status = 'corrected',
+                        last_touched_by = COALESCE(%s, last_touched_by),
+                        updated_at = NOW()
+                    WHERE gmail_message_id = %s
+                    """,
+                    (touched_by, gmail_message_id),
+                )
+                return cur.rowcount > 0
+
+    def set_wizard_triage(
+        self,
+        *,
+        gmail_message_id: str,
+        status: str,
+        touched_by: str | None,
+    ) -> bool:
+        """Set a manual triage decision on a pulled email.
+
+        status must be 'triaged_pending' or 'triaged_rejected'. The email is
+        looked up by Gmail message id; if it isn't cached yet the caller
+        should upsert it first via upsert_wizard_email.
+        """
+        if status not in {"triaged_pending", "triaged_rejected"}:
+            raise ValueError(f"Invalid triage status: {status}")
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE correction_wizard_emails
+                    SET status = %s,
+                        last_touched_by = COALESCE(%s, last_touched_by),
+                        updated_at = NOW()
+                    WHERE gmail_message_id = %s
+                    """,
+                    (status, touched_by, gmail_message_id),
+                )
+                return cur.rowcount > 0
+
+    def fetch_wizard_subject_body_by_statuses(
+        self,
+        *,
+        statuses: list[str],
+        limit: int = 2000,
+    ) -> list[tuple[str, str]]:
+        """Return (subject, body) pairs for emails in the given status set.
+
+        Used by the keyword-analysis endpoint. Bounded by `limit` so a huge
+        triage history can't blow out the analyzer.
+        """
+        if not statuses:
+            return []
+        bounded_limit = max(1, min(limit, 5000))
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT subject, body
+                    FROM correction_wizard_emails
+                    WHERE status = ANY(%s)
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (statuses, bounded_limit),
+                )
+                rows = cur.fetchall()
+        return [(row.get("subject") or "", row.get("body") or "") for row in rows]
 
     def save_verification_event(
         self,

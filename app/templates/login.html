@@ -1,23 +1,26 @@
 {% extends "base.html" %}
-{% block title %}Login | Hoodline Dashboard{% endblock %}
+{% block title %}Sign in | Hoodline Corrections{% endblock %}
 {% block content %}
-<section class="panel auth-panel">
-  <h1>Dashboard Login</h1>
-  <p>Sign in to access the Hoodline correction dashboard.</p>
+<section class="bg-surface border border-line rounded-md border-l-[3px] border-l-brick p-6 shadow-panel max-w-[460px] mx-auto w-full">
+  <p class="text-[0.72rem] font-medium tracking-kicker uppercase text-muted mb-1">Access</p>
+  <h1 class="font-display font-semibold text-[1.8rem] leading-tight tracking-tight">Sign in</h1>
+  <p class="text-muted mt-1">Sign in to access the Hoodline correction dashboard.</p>
   {% if error %}
-  <p class="error">{{ error }}</p>
+  <p class="error mt-3">{{ error }}</p>
   {% endif %}
 
-  <form method="post" action="/login" class="auth-form">
+  <form method="post" action="/login" class="auth-form grid gap-2.5 mt-5">
     <input type="hidden" name="next" value="{{ next }}" />
 
-    <label for="username">Username</label>
-    <input id="username" name="username" type="text" required />
+    <label for="username" class="text-[0.88rem] font-semibold">Username</label>
+    <input id="username" name="username" type="text" required
+           class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
 
-    <label for="password">Password</label>
-    <input id="password" name="password" type="password" required />
+    <label for="password" class="text-[0.88rem] font-semibold">Password</label>
+    <input id="password" name="password" type="password" required
+           class="w-full border border-line rounded px-3 py-2 bg-surface text-[0.92rem] focus:outline-none focus:border-ink focus:ring-2 focus:ring-ink/10" />
 
-    <button class="btn" type="submit">Login</button>
+    <button class="mt-2 bg-ink text-white border border-ink rounded px-3.5 py-2 text-sm font-medium hover:bg-black" type="submit">Sign in</button>
   </form>
 </section>
 {% endblock %}

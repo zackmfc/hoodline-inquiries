@@ -29,6 +29,7 @@ from app.decodo_client import DecodoClient
 from app.discord_cache import DiscordCachePopulator
 from app.fetcher import ArticleFetcher
 from app.gmail_client import GmailClient
+from app.keyword_analysis import analyze_distinctive_all_sizes
 from app.remediation import RemediationEngine
 from app.resolver import ArticleResolver, ResolverConfig
 from app.stager import DraftStager
@@ -935,15 +936,31 @@ async def corrections_page(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/requests", response_class=HTMLResponse)
+async def requests_page(request: Request) -> HTMLResponse:
+    user = page_user_or_redirect(request, "/requests")
+    if isinstance(user, RedirectResponse):
+        return user
+    if user["role"] not in ADMIN_ROLES:
+        return RedirectResponse(url="/", status_code=302)
+
+    return templates.TemplateResponse(
+        "requests.html",
+        render_context(request),
+    )
+
+
 class CorrectionAssessRequest(BaseModel):
     sender_name: str = ""
     sender_email: str = ""
     subject: str = ""
     body: str = ""
+    gmail_message_id: str = ""
 
 
 class DiscordParseRequest(BaseModel):
     message: str = ""
+    gmail_message_id: str = ""
 
 
 class CorrectionGenerateRequest(BaseModel):
@@ -958,6 +975,32 @@ class CorrectionGenerateRequest(BaseModel):
     article_body: str = ""
     featured_image_attribution: str = ""
     image_url: str = ""
+    gmail_message_id: str = ""
+
+
+WIZARD_TERMINAL_STATUSES = {
+    "completed",
+    "gate_failed",
+    "image_only",
+    "corrected",
+    "triaged_pending",
+    "triaged_rejected",
+}
+
+WIZARD_PENDING_STATUSES = [
+    "assessed",
+    "located",
+    "image_only",
+    "completed",
+    "triaged_pending",
+]
+WIZARD_REJECTED_STATUSES = ["gate_failed", "triaged_rejected"]
+WIZARD_CORRECTED_STATUSES = ["corrected"]
+
+WIZARD_TRIAGE_DECISIONS = {
+    "pending": "triaged_pending",
+    "rejected": "triaged_rejected",
+}
 
 
 def _parse_sender_email(raw: str) -> tuple[str, str]:
@@ -976,13 +1019,17 @@ def _parse_sender_email(raw: str) -> tuple[str, str]:
 
 
 @app.get("/api/corrections/inbox")
-async def api_corrections_inbox(request: Request, limit: int = 5) -> JSONResponse:
+async def api_corrections_inbox(
+    request: Request,
+    limit: int = 5,
+    include_processed: bool = False,
+) -> JSONResponse:
     ensure_admin_api(request)
 
-    if limit not in (1, 5, 50):
+    if limit < 1 or limit > 100:
         raise HTTPException(
             status_code=400,
-            detail="limit must be 1, 5, or 50",
+            detail="limit must be between 1 and 100",
         )
 
     if not gmail_client.configured:
@@ -1005,11 +1052,25 @@ async def api_corrections_inbox(request: Request, limit: int = 5) -> JSONRespons
         # "No Gmail messages matched" is a normal empty-queue case.
         message = str(exc)
         if message.startswith("No Gmail messages matched"):
-            return JSONResponse({"messages": [], "query": query})
+            return JSONResponse({
+                "messages": [],
+                "query": query,
+                "total_fetched": 0,
+                "filtered_count": 0,
+            })
         raise HTTPException(status_code=400, detail=message) from exc
 
+    message_ids = [
+        (m.get("gmail_message_id") or "") for m in fetched
+    ]
+    stored_by_id = storage.get_wizard_emails_by_ids(
+        [mid for mid in message_ids if mid]
+    )
+
     results: list[dict[str, Any]] = []
+    filtered_count = 0
     for msg in fetched:
+        gmail_message_id = msg.get("gmail_message_id", "") or ""
         name, email_addr = _parse_sender_email(msg.get("sender", ""))
         internal_ms_raw = msg.get("internal_date_ms")
         received_at: str | None = None
@@ -1022,8 +1083,39 @@ async def api_corrections_inbox(request: Request, limit: int = 5) -> JSONRespons
             except (TypeError, ValueError):
                 received_at = None
 
+        stored = stored_by_id.get(gmail_message_id)
+        status = (stored or {}).get("status", "new")
+
+        if not include_processed and status in WIZARD_TERMINAL_STATUSES:
+            filtered_count += 1
+            continue
+
+        if gmail_message_id:
+            received_dt: datetime | None = None
+            if internal_ms_raw is not None:
+                try:
+                    received_dt = datetime.fromtimestamp(
+                        int(internal_ms_raw) / 1000, tz=timezone.utc
+                    )
+                except (TypeError, ValueError):
+                    received_dt = None
+            storage.upsert_wizard_email(
+                gmail_message_id=gmail_message_id,
+                gmail_thread_id=msg.get("gmail_thread_id") or None,
+                sender_raw=msg.get("sender", ""),
+                sender_name=name,
+                sender_email=email_addr,
+                subject=msg.get("subject", ""),
+                snippet=msg.get("snippet", ""),
+                body=msg.get("body", ""),
+                received_at=received_dt,
+            )
+
+        updated_at = (stored or {}).get("updated_at")
+        updated_iso = updated_at.isoformat() if hasattr(updated_at, "isoformat") else updated_at
+
         results.append({
-            "gmail_message_id": msg.get("gmail_message_id", ""),
+            "gmail_message_id": gmail_message_id,
             "gmail_thread_id": msg.get("gmail_thread_id", ""),
             "sender_raw": msg.get("sender", ""),
             "sender_name": name,
@@ -1032,16 +1124,276 @@ async def api_corrections_inbox(request: Request, limit: int = 5) -> JSONRespons
             "snippet": msg.get("snippet", ""),
             "body": msg.get("body", ""),
             "received_at": received_at,
+            "wizard_status": status,
+            "wizard_updated_at": updated_iso,
+            "wizard_touched_by": (stored or {}).get("last_touched_by"),
+            "wizard_state": (stored or {}).get("state_json") or {},
         })
 
-    return JSONResponse({"messages": results, "query": query})
+    return JSONResponse({
+        "messages": results,
+        "query": query,
+        "total_fetched": len(fetched),
+        "filtered_count": filtered_count,
+    })
+
+
+@app.get("/api/corrections/wizard/{gmail_message_id}")
+async def api_corrections_wizard_state(
+    gmail_message_id: str, request: Request
+) -> JSONResponse:
+    ensure_admin_api(request)
+    record = storage.get_wizard_email(gmail_message_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No stored state for this email")
+    updated_at = record.get("updated_at")
+    created_at = record.get("created_at")
+    received_at = record.get("received_at")
+    return JSONResponse({
+        "gmail_message_id": record["gmail_message_id"],
+        "gmail_thread_id": record.get("gmail_thread_id"),
+        "sender_raw": record.get("sender_raw", ""),
+        "sender_name": record.get("sender_name", ""),
+        "sender_email": record.get("sender_email", ""),
+        "subject": record.get("subject", ""),
+        "snippet": record.get("snippet", ""),
+        "body": record.get("body", ""),
+        "received_at": received_at.isoformat() if hasattr(received_at, "isoformat") else received_at,
+        "status": record.get("status", "new"),
+        "state": record.get("state_json") or {},
+        "last_touched_by": record.get("last_touched_by"),
+        "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
+        "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else updated_at,
+    })
+
+
+def _serialize_wizard_row(row: dict[str, Any]) -> dict[str, Any]:
+    state = row.get("state_json") or {}
+    assess_resp = (state.get("assess") or {}).get("response") or {}
+    discord_res = (state.get("discord") or {}).get("result") or {}
+    gen_resp = (state.get("generate") or {}).get("response") or {}
+    gen_correction = gen_resp.get("correction") or {}
+
+    def _iso(v: Any) -> str | None:
+        return v.isoformat() if hasattr(v, "isoformat") else v
+
+    return {
+        "gmail_message_id": row.get("gmail_message_id", ""),
+        "gmail_thread_id": row.get("gmail_thread_id"),
+        "sender_raw": row.get("sender_raw", ""),
+        "sender_name": row.get("sender_name", ""),
+        "sender_email": row.get("sender_email", ""),
+        "subject": row.get("subject", ""),
+        "snippet": row.get("snippet", ""),
+        "received_at": _iso(row.get("received_at")),
+        "status": row.get("status", "new"),
+        "last_touched_by": row.get("last_touched_by"),
+        "created_at": _iso(row.get("created_at")),
+        "updated_at": _iso(row.get("updated_at")),
+        "assess": {
+            "CRVS": assess_resp.get("CRVS"),
+            "SAS": assess_resp.get("SAS"),
+            "gate_passed": assess_resp.get("gate_passed"),
+            "image_only": assess_resp.get("image_only"),
+        },
+        "article": {
+            "article_id": discord_res.get("article_id"),
+            "cms_edit_url": discord_res.get("cms_edit_url"),
+            "title": (discord_res.get("matched_post") or {}).get("title"),
+        },
+        "generate_summary": gen_resp.get("summary") or "",
+        "generate_crvs2": gen_correction.get("CRVS2"),
+    }
+
+
+@app.get("/api/corrections/requests")
+async def api_corrections_requests(
+    request: Request,
+    bucket: str,
+    limit: int = 50,
+) -> JSONResponse:
+    ensure_admin_api(request)
+
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+
+    bucket_statuses = {
+        "unread": ["new"],
+        "rejected": WIZARD_REJECTED_STATUSES,
+        "pending": WIZARD_PENDING_STATUSES,
+        "completed": WIZARD_CORRECTED_STATUSES,
+    }
+    if bucket not in bucket_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail="bucket must be one of: unread, rejected, pending, completed",
+        )
+
+    rows = storage.list_wizard_emails_by_statuses(
+        statuses=bucket_statuses[bucket],
+        limit=limit,
+    )
+    return JSONResponse({
+        "bucket": bucket,
+        "items": [_serialize_wizard_row(r) for r in rows],
+    })
+
+
+@app.post("/api/corrections/wizard/{gmail_message_id}/mark-corrected")
+async def api_corrections_wizard_mark_corrected(
+    gmail_message_id: str, request: Request
+) -> JSONResponse:
+    user = ensure_admin_api(request)
+    if not gmail_message_id.strip():
+        raise HTTPException(status_code=400, detail="gmail_message_id is required")
+
+    updated = storage.mark_wizard_corrected(
+        gmail_message_id=gmail_message_id.strip(),
+        touched_by=user["username"],
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="No wizard record for this email")
+
+    return JSONResponse({"gmail_message_id": gmail_message_id, "status": "corrected"})
+
+
+class CorrectionTriageRequest(BaseModel):
+    gmail_message_id: str
+    decision: str  # "pending" or "rejected"
+
+
+@app.post("/api/corrections/triage")
+async def api_corrections_triage(
+    payload: CorrectionTriageRequest, request: Request
+) -> JSONResponse:
+    """Manually mark a pulled email as pending (real correction) or rejected (not a correction).
+
+    Distinct from the automatic gate_failed/assessed flow — this is the
+    operator's judgment call used to refine the Gmail filter.
+    """
+    user = ensure_admin_api(request)
+    gmail_message_id = (payload.gmail_message_id or "").strip()
+    if not gmail_message_id:
+        raise HTTPException(status_code=400, detail="gmail_message_id is required")
+
+    new_status = WIZARD_TRIAGE_DECISIONS.get(payload.decision)
+    if not new_status:
+        raise HTTPException(
+            status_code=400,
+            detail="decision must be 'pending' or 'rejected'",
+        )
+
+    updated = storage.set_wizard_triage(
+        gmail_message_id=gmail_message_id,
+        status=new_status,
+        touched_by=user["username"],
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=404,
+            detail="No wizard record for this email — fetch the Gmail queue first",
+        )
+
+    return JSONResponse(
+        {
+            "gmail_message_id": gmail_message_id,
+            "status": new_status,
+            "decision": payload.decision,
+        }
+    )
+
+
+@app.get("/api/corrections/keyword-analysis")
+async def api_corrections_keyword_analysis(
+    request: Request,
+    top_n: int = 20,
+    min_count: int = 2,
+) -> JSONResponse:
+    """Return keywords and phrases distinctive of the Pending bucket vs Rejected, and vice-versa.
+
+    Each bucket's result is split into `unigrams`, `bigrams`, and `trigrams`.
+    The Pending-distinctive list is the primary output — terms that reader
+    correction emails use but newsletter/spam rarely do. The Rejected-distinctive
+    list is the mirror, useful as Gmail filter exclusions.
+    """
+    ensure_admin_api(request)
+    if top_n < 1 or top_n > 100:
+        raise HTTPException(status_code=400, detail="top_n must be between 1 and 100")
+    if min_count < 1 or min_count > 50:
+        raise HTTPException(status_code=400, detail="min_count must be between 1 and 50")
+
+    pending_docs_pairs = storage.fetch_wizard_subject_body_by_statuses(
+        statuses=WIZARD_PENDING_STATUSES,
+    )
+    rejected_docs_pairs = storage.fetch_wizard_subject_body_by_statuses(
+        statuses=WIZARD_REJECTED_STATUSES,
+    )
+
+    pending_docs = [f"{subj}\n{body}" for subj, body in pending_docs_pairs]
+    rejected_docs = [f"{subj}\n{body}" for subj, body in rejected_docs_pairs]
+
+    pending_distinctive = analyze_distinctive_all_sizes(
+        pending_docs,
+        rejected_docs,
+        min_primary_count=min_count,
+        top_n_per_size=top_n,
+    )
+    rejected_distinctive = analyze_distinctive_all_sizes(
+        rejected_docs,
+        pending_docs,
+        min_primary_count=min_count,
+        top_n_per_size=top_n,
+    )
+
+    return JSONResponse(
+        {
+            "pending_count": len(pending_docs),
+            "rejected_count": len(rejected_docs),
+            "pending_distinctive": pending_distinctive,
+            "rejected_distinctive": rejected_distinctive,
+        }
+    )
+
+
+@app.post("/api/corrections/wizard/clear")
+async def api_corrections_wizard_clear(request: Request) -> JSONResponse:
+    """Wipe all Corrections-wizard state so every email returns to status=new.
+
+    Does NOT touch Gmail, the editorial_posts (Discord) cache, or anything
+    else — just the per-email wizard progress stored in correction_wizard_emails.
+    """
+    ensure_admin_api(request)
+    cleared = storage.clear_wizard_emails()
+    return JSONResponse({"status": "ok", "cleared": cleared})
+
+
+def _persist_wizard_email_base(
+    gmail_message_id: str,
+    *,
+    sender_name: str,
+    sender_email: str,
+    subject: str,
+    body: str,
+) -> None:
+    """Upsert the form snapshot before recording a step result."""
+    storage.upsert_wizard_email(
+        gmail_message_id=gmail_message_id,
+        gmail_thread_id=None,
+        sender_raw=f"{sender_name} <{sender_email}>".strip(" <>"),
+        sender_name=sender_name,
+        sender_email=sender_email,
+        subject=subject,
+        snippet="",
+        body=body,
+        received_at=None,
+    )
 
 
 @app.post("/api/corrections/assess")
 async def api_corrections_assess(
     payload: CorrectionAssessRequest, request: Request
 ) -> JSONResponse:
-    ensure_admin_api(request)
+    user = ensure_admin_api(request)
     if not payload.subject.strip() and not payload.body.strip():
         raise HTTPException(status_code=400, detail="subject or body is required")
 
@@ -1058,18 +1410,65 @@ async def api_corrections_assess(
         raise HTTPException(status_code=502, detail=f"Assessment failed: {exc}") from exc
 
     both_above_four = result["CRVS"] > 4 and result["SAS"] > 4
-    return JSONResponse({**result, "gate_passed": both_above_four})
+    response = {**result, "gate_passed": both_above_four}
+
+    if payload.gmail_message_id.strip():
+        if result.get("image_only"):
+            new_status = "image_only"
+        elif both_above_four:
+            new_status = "assessed"
+        else:
+            new_status = "gate_failed"
+
+        _persist_wizard_email_base(
+            payload.gmail_message_id.strip(),
+            sender_name=payload.sender_name,
+            sender_email=payload.sender_email,
+            subject=payload.subject,
+            body=payload.body,
+        )
+        storage.save_wizard_step(
+            gmail_message_id=payload.gmail_message_id.strip(),
+            step_key="assess",
+            step_data={
+                "form": {
+                    "sender_name": payload.sender_name,
+                    "sender_email": payload.sender_email,
+                    "subject": payload.subject,
+                    "body": payload.body,
+                },
+                "response": response,
+            },
+            status=new_status,
+            touched_by=user["username"],
+        )
+
+    return JSONResponse(response)
 
 
 @app.post("/api/corrections/parse-discord")
 async def api_corrections_parse_discord(
     payload: DiscordParseRequest, request: Request
 ) -> JSONResponse:
-    ensure_admin_api(request)
+    user = ensure_admin_api(request)
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="message is required")
 
     result = extract_cms_edit_link(payload.message)
+
+    if payload.gmail_message_id.strip() and result.get("found"):
+        storage.save_wizard_step(
+            gmail_message_id=payload.gmail_message_id.strip(),
+            step_key="discord",
+            step_data={
+                "source": "manual_paste",
+                "message": payload.message,
+                "result": result,
+            },
+            status="located",
+            touched_by=user["username"],
+        )
+
     return JSONResponse(result)
 
 
@@ -1078,13 +1477,14 @@ class LocateDiscordRequest(BaseModel):
     body: str = ""
     article_url_hint: str = ""
     article_title_hint: str = ""
+    gmail_message_id: str = ""
 
 
 @app.post("/api/corrections/locate-discord")
 async def api_corrections_locate_discord(
     payload: LocateDiscordRequest, request: Request
 ) -> JSONResponse:
-    ensure_admin_api(request)
+    user = ensure_admin_api(request)
 
     if not payload.subject.strip() and not payload.body.strip():
         raise HTTPException(
@@ -1102,6 +1502,18 @@ async def api_corrections_locate_discord(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Locate failed: {exc}") from exc
 
+    if payload.gmail_message_id.strip() and result.get("found"):
+        storage.save_wizard_step(
+            gmail_message_id=payload.gmail_message_id.strip(),
+            step_key="discord",
+            step_data={
+                "source": "auto_locate",
+                "result": result,
+            },
+            status="located",
+            touched_by=user["username"],
+        )
+
     return JSONResponse(result)
 
 
@@ -1109,7 +1521,7 @@ async def api_corrections_locate_discord(
 async def api_corrections_generate(
     payload: CorrectionGenerateRequest, request: Request
 ) -> JSONResponse:
-    ensure_admin_api(request)
+    user = ensure_admin_api(request)
     if not payload.title.strip() and not payload.article_body.strip():
         raise HTTPException(
             status_code=400,
@@ -1135,6 +1547,26 @@ async def api_corrections_generate(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Correction generation failed: {exc}") from exc
+
+    if payload.gmail_message_id.strip():
+        storage.save_wizard_step(
+            gmail_message_id=payload.gmail_message_id.strip(),
+            step_key="generate",
+            step_data={
+                "cms_inputs": {
+                    "title": payload.title,
+                    "meta_description": payload.meta_description,
+                    "meta_title": payload.meta_title,
+                    "excerpt": payload.excerpt,
+                    "article_body": payload.article_body,
+                    "featured_image_attribution": payload.featured_image_attribution,
+                    "image_url": payload.image_url,
+                },
+                "response": result,
+            },
+            status="completed",
+            touched_by=user["username"],
+        )
 
     return JSONResponse(result)
 
@@ -1413,6 +1845,27 @@ async def api_discord_refresh(request: Request) -> JSONResponse:
             status_code=400,
         )
     result = discord_cache.populate(storage)
+    return JSONResponse(result)
+
+
+@app.post("/api/discord/refresh-incremental")
+async def api_discord_refresh_incremental(request: Request) -> JSONResponse:
+    """Scan only messages posted since the newest cached one.
+
+    This is fired from the Corrections wizard at the top of Step 2 so a
+    just-published Discord editor post is guaranteed to be in the cache
+    before the locator queries it.
+    """
+    ensure_admin_api(request)
+    if not discord_cache.is_configured():
+        return JSONResponse(
+            {"status": "error", "message": "DISCORD_BOT_TOKEN or DISCORD_GUILD_ID not configured"},
+            status_code=400,
+        )
+
+    since = storage.latest_editorial_posted_at(source="discord")
+    result = discord_cache.populate(storage, since=since)
+    result["since"] = since.isoformat() if since else None
     return JSONResponse(result)
 
 
