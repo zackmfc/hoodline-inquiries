@@ -10,6 +10,18 @@
 
   const FIELD_ORDER = ["t", "mt", "md", "ex", "b", "fia"];
 
+  // Maps the wizard's Claude-output keys (t/md/mt/ex/b/fia) to the field
+  // names the publish endpoint accepts (which then map to the CMS API
+  // assignment envelope server-side).
+  const FIELD_KEY_TO_PUBLISH_NAME = {
+    t: "title",
+    md: "meta_description",
+    mt: "meta_title",
+    ex: "excerpt",
+    b: "article_body",
+    fia: "featured_image_attribution",
+  };
+
   const steps = {
     email: document.getElementById("step-email"),
     discord: document.getElementById("step-discord"),
@@ -36,6 +48,11 @@
     corrected: { text: "Corrected", cls: "status-done" },
     triaged_pending: { text: "Triaged · Pending", cls: "status-active" },
     triaged_rejected: { text: "Triaged · Rejected", cls: "status-late" },
+    processing_assess: { text: "Assessing", cls: "status-active" },
+    processing_locate: { text: "Locating", cls: "status-active" },
+    processing_generate: { text: "Generating", cls: "status-active" },
+    processing_publish: { text: "Publishing", cls: "status-active" },
+    job_failed: { text: "Job failed", cls: "status-late" },
   };
 
   function setStepState(stepEl, newState) {
@@ -89,12 +106,11 @@
   [steps.discord, steps.cms, steps.result].forEach(lockStep);
   setStepState(steps.email, "active");
 
-  async function postJSON(url, data) {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function parseResponseJSON(resp) {
     const text = await resp.text();
     let payload;
     try {
@@ -102,11 +118,50 @@
     } catch (err) {
       payload = { detail: text };
     }
+    return payload;
+  }
+
+  async function waitForJob(jobPayload) {
+    const jobId = jobPayload && jobPayload.job_id;
+    if (!jobId) return jobPayload;
+
+    let delay = 750;
+    for (;;) {
+      await sleep(delay);
+      const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+      const payload = await parseResponseJSON(resp);
+      if (!resp.ok) {
+        throw new Error(payload.detail || `HTTP ${resp.status}`);
+      }
+      if (payload.status === "succeeded") {
+        return payload.result || {};
+      }
+      if (payload.status === "failed") {
+        throw new Error(payload.error || "Background job failed");
+      }
+      delay = Math.min(2500, Math.round(delay * 1.25));
+    }
+  }
+
+  async function unwrapMaybeJob(payload) {
+    if (payload && payload.job_id && (payload.background || payload.status)) {
+      return waitForJob(payload);
+    }
+    return payload;
+  }
+
+  async function postJSON(url, data) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const payload = await parseResponseJSON(resp);
     if (!resp.ok) {
       const detail = payload && payload.detail ? payload.detail : `HTTP ${resp.status}`;
       throw new Error(detail);
     }
-    return payload;
+    return unwrapMaybeJob(payload);
   }
 
   function formToObject(form) {
@@ -116,6 +171,22 @@
       result[key] = typeof value === "string" ? value : "";
     });
     return result;
+  }
+
+  function isValidScore(value) {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+
+  function validateAssessResult(res) {
+    if (!res || typeof res !== "object") {
+      throw new Error("Assessment did not return a result.");
+    }
+    if (res.job_id || ["queued", "running"].includes(res.status)) {
+      throw new Error("Assessment is still running in the background. Refresh and try again.");
+    }
+    if (!isValidScore(res.CRVS) || !isValidScore(res.SAS)) {
+      throw new Error("Assessment finished without CRVS/SAS scores. Re-assess or check the job logs.");
+    }
   }
 
   function setStatus(el, text, tone) {
@@ -260,12 +331,11 @@
         const resp = await fetch("/api/corrections/wizard/clear", {
           method: "POST",
         });
-        const text = await resp.text();
-        let payload;
-        try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { detail: text }; }
+        let payload = await parseResponseJSON(resp);
         if (!resp.ok) {
           throw new Error(payload.detail || `HTTP ${resp.status}`);
         }
+        payload = await unwrapMaybeJob(payload);
 
         // Reset in-flight wizard state so the currently-open email doesn't
         // think it's still mid-flow.
@@ -304,12 +374,11 @@
         `/api/corrections/inbox?limit=${limit}` +
         (includeProcessed ? `&include_processed=true` : ``);
       const resp = await fetch(url);
-      const text = await resp.text();
-      let payload;
-      try { payload = JSON.parse(text); } catch (_) { payload = { detail: text }; }
+      let payload = await parseResponseJSON(resp);
       if (!resp.ok) {
         throw new Error(payload.detail || `HTTP ${resp.status}`);
       }
+      payload = await unwrapMaybeJob(payload);
 
       const messages = payload.messages || [];
       const filtered = payload.filtered_count || 0;
@@ -468,11 +537,14 @@
     const discordEntry = stored.discord;
     if (discordEntry && discordEntry.result && discordEntry.result.found) {
       const r = discordEntry.result;
-      setDiscordResolved({
+      // Skip the auto-fetch on restore — we'll only auto-fetch if step 3
+      // hasn't been completed yet (handled below).
+      const skipAutoFetch = !!(stored.generate && stored.generate.response);
+      setDiscordResolvedQuiet({
         article_id: r.article_id,
         cms_edit_url: r.cms_edit_url,
+        skipAutoFetch,
       });
-      // Restore banners only for auto-located results (manual paste has no metadata).
       if (discordEntry.source === "auto_locate") {
         renderLocatorMatchSource(r);
         renderLocatorGoogleWarning(r);
@@ -498,6 +570,7 @@
   }
 
   function renderAssessResult(res) {
+    validateAssessResult(res);
     scoreCRVS.textContent = res.CRVS;
     scoreSAS.textContent = res.SAS;
     meterCRVS.style.width = `${(res.CRVS / 10) * 100}%`;
@@ -600,6 +673,19 @@
   const locatorWarning = document.getElementById("locator-warning");
   const locatorMatchSource = document.getElementById("locator-match-source");
 
+  const cmsFetchBtn = document.getElementById("cms-fetch-btn");
+  const cmsFetchStatus = document.getElementById("cms-fetch-status");
+  if (cmsFetchBtn) {
+    cmsFetchBtn.addEventListener("click", () => {
+      const articleId = state.discord && state.discord.article_id;
+      if (!articleId) {
+        setStatus(cmsFetchStatus, "Locate the article (step 2) first.", "error");
+        return;
+      }
+      autoFetchCmsFields(articleId, { auto: false });
+    });
+  }
+
   function clearLocatorBanners() {
     if (locatorWarning) {
       locatorWarning.hidden = true;
@@ -659,6 +745,10 @@
   }
 
   function setDiscordResolved({ article_id, cms_edit_url }) {
+    setDiscordResolvedQuiet({ article_id, cms_edit_url, skipAutoFetch: false });
+  }
+
+  function setDiscordResolvedQuiet({ article_id, cms_edit_url, skipAutoFetch }) {
     articleIdEl.textContent = article_id ?? "—";
     editUrlLink.textContent = cms_edit_url;
     editUrlLink.href = cms_edit_url;
@@ -669,6 +759,84 @@
     state.discord = { found: true, article_id, cms_edit_url };
     setStepState(steps.discord, "done");
     unlockStep(steps.cms);
+    if (!skipAutoFetch) {
+      autoFetchCmsFields(article_id, { auto: true });
+    }
+  }
+
+  async function autoFetchCmsFields(articleId, opts = {}) {
+    if (!articleId || !cmsFetchStatus) return;
+    const auto = !!opts.auto;
+    if (cmsFetchBtn) cmsFetchBtn.disabled = true;
+    setStatus(
+      cmsFetchStatus,
+      auto ? "Fetching article fields from CMS API…" : "Re-fetching from CMS API…",
+      "info"
+    );
+
+    try {
+      const resp = await fetch(
+        `/api/cms/articles/${encodeURIComponent(articleId)}/wizard-fields`
+      );
+      let payload = await parseResponseJSON(resp);
+      if (!resp.ok) {
+        throw new Error(payload.detail || `HTTP ${resp.status}`);
+      }
+      payload = await unwrapMaybeJob(payload);
+
+      if (payload.available && payload.fields) {
+        const filled = applyCmsFields(payload.fields, { overwrite: !auto });
+        setStatus(
+          cmsFetchStatus,
+          filled === 0
+            ? "CMS API responded but every field was empty — fill in manually."
+            : `Prefilled ${filled} field${filled === 1 ? "" : "s"} from the CMS API.`,
+          filled === 0 ? "error" : "ok"
+        );
+      } else {
+        const reason = payload.error
+          ? ` (${payload.error})`
+          : " (the CMS GET endpoint isn't returning useful data yet)";
+        setStatus(
+          cmsFetchStatus,
+          `Couldn't auto-fill from the CMS API${reason}. Paste fields manually below.`,
+          "error"
+        );
+      }
+    } catch (err) {
+      setStatus(
+        cmsFetchStatus,
+        `CMS API fetch failed: ${err.message}. Paste fields manually below.`,
+        "error"
+      );
+    } finally {
+      if (cmsFetchBtn) cmsFetchBtn.disabled = false;
+    }
+  }
+
+  function applyCmsFields(fields, opts = {}) {
+    const overwrite = !!opts.overwrite;
+    const formFieldNames = [
+      "title",
+      "meta_title",
+      "meta_description",
+      "excerpt",
+      "article_body",
+      "featured_image_attribution",
+      "image_url",
+    ];
+    let filledCount = 0;
+    formFieldNames.forEach((name) => {
+      const input = cmsForm.querySelector(`[name="${name}"]`);
+      if (!input) return;
+      const incoming = (fields[name] || "").toString();
+      if (!incoming) return;
+      const existing = (input.value || "").toString();
+      if (!overwrite && existing.trim().length > 0) return;
+      input.value = incoming;
+      filledCount += 1;
+    });
+    return filledCount;
   }
 
   function renderLocatorTrace(trace) {
@@ -709,12 +877,11 @@
       const resp = await fetch("/api/discord/refresh-incremental", {
         method: "POST",
       });
-      const text = await resp.text();
-      let payload;
-      try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = {}; }
+      let payload = await parseResponseJSON(resp);
       if (!resp.ok) {
         return { ok: false, detail: payload.detail || `HTTP ${resp.status}` };
       }
+      payload = await unwrapMaybeJob(payload);
       return { ok: true, payload };
     } catch (err) {
       return { ok: false, detail: err && err.message ? err.message : String(err) };
@@ -1006,6 +1173,7 @@
       proposedFields.forEach((key) => {
         const frag = fieldTemplate.content.cloneNode(true);
         const card = frag.querySelector(".field-card");
+        card.dataset.fieldKey = key;
         card.querySelector(".field-card-title").textContent =
           `${FIELD_LABELS[key]}  (${key})`;
 
@@ -1020,9 +1188,18 @@
         }
 
         const valueEl = card.querySelector(".field-card-value");
-        valueEl.textContent = correction[key];
+        valueEl.value = correction[key];
+        const includeEl = card.querySelector(".field-card-include");
+        if (!FIELD_KEY_TO_PUBLISH_NAME[key]) {
+          // No publish mapping (image flag etc.) — hide include toggle.
+          if (includeEl) {
+            includeEl.checked = false;
+            const wrap = includeEl.closest("label");
+            if (wrap) wrap.hidden = true;
+          }
+        }
         const btn = card.querySelector(".field-card-copy");
-        btn.addEventListener("click", () => copyToClipboard(correction[key], btn));
+        btn.addEventListener("click", () => copyToClipboard(valueEl.value, btn));
         generateFields.appendChild(frag);
       });
     }
@@ -1036,35 +1213,123 @@
     copyToClipboard(generateRaw.textContent, copyRawBtn);
   });
 
-  // ── Mark corrected + deep-link restore ─────────────────────────
-  const markCorrectedWrap = document.getElementById("mark-corrected-wrap");
+  // ── Publish Update + deep-link restore ─────────────────────────
+  const publishWrap = document.getElementById("publish-wrap");
+  const publishBtn = document.getElementById("publish-btn");
   const markCorrectedBtn = document.getElementById("mark-corrected-btn");
-  const markCorrectedStatus = document.getElementById("mark-corrected-status");
+  const publishStatus = document.getElementById("publish-status");
 
   function showMarkCorrectedIfEligible(wizardStatus) {
-    if (!markCorrectedWrap) return;
-    const canMark =
+    if (!publishWrap) return;
+    const canPublish =
       !!state.gmail_message_id &&
       wizardStatus !== "corrected" &&
       (wizardStatus === "completed" || !!state.generate);
-    markCorrectedWrap.hidden = !canMark;
+    publishWrap.hidden = !canPublish;
     if (wizardStatus === "corrected") {
-      setStatus(markCorrectedStatus, "Already marked as corrected.", "ok");
-      markCorrectedBtn.disabled = true;
+      setStatus(publishStatus, "Already marked as corrected.", "ok");
+      if (publishBtn) publishBtn.disabled = true;
+      if (markCorrectedBtn) markCorrectedBtn.disabled = true;
     } else {
-      setStatus(markCorrectedStatus, "", "");
-      markCorrectedBtn.disabled = false;
+      setStatus(publishStatus, "", "");
+      if (publishBtn) publishBtn.disabled = false;
+      if (markCorrectedBtn) markCorrectedBtn.disabled = false;
     }
+  }
+
+  function collectEditedFields() {
+    const fields = {};
+    generateFields.querySelectorAll(".field-card").forEach((card) => {
+      const key = card.dataset.fieldKey;
+      const publishName = FIELD_KEY_TO_PUBLISH_NAME[key];
+      if (!publishName) return;
+      const include = card.querySelector(".field-card-include");
+      if (include && !include.checked) return;
+      const value = card.querySelector(".field-card-value");
+      if (!value) return;
+      fields[publishName] = value.value;
+    });
+    return fields;
+  }
+
+  if (publishBtn) {
+    publishBtn.addEventListener("click", async () => {
+      if (!state.gmail_message_id) {
+        setStatus(publishStatus, "No Gmail message associated.", "error");
+        return;
+      }
+      const articleId = state.discord && state.discord.article_id;
+      if (!articleId) {
+        setStatus(
+          publishStatus,
+          "Article ID is missing — re-run step 2.",
+          "error"
+        );
+        return;
+      }
+      const fields = collectEditedFields();
+      if (Object.keys(fields).length === 0) {
+        setStatus(
+          publishStatus,
+          "No fields selected to publish. Tick at least one card.",
+          "error"
+        );
+        return;
+      }
+
+      const fieldList = Object.keys(fields).join(", ");
+      const ok = window.confirm(
+        `Publish update to article #${articleId}?\n\n` +
+        `This sends a PATCH to the Hoodline CMS API and updates: ${fieldList}.`
+      );
+      if (!ok) return;
+
+      publishBtn.disabled = true;
+      if (markCorrectedBtn) markCorrectedBtn.disabled = true;
+      setStatus(publishStatus, "Publishing update via CMS API…", "info");
+      try {
+        const resp = await fetch(
+          `/api/corrections/wizard/${encodeURIComponent(state.gmail_message_id)}/publish`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              article_id: articleId,
+              fields,
+            }),
+          }
+        );
+        let payload = await parseResponseJSON(resp);
+        if (!resp.ok) throw new Error(payload.detail || `HTTP ${resp.status}`);
+        payload = await unwrapMaybeJob(payload);
+        const published = (payload.fields_published || []).join(", ") || "—";
+        setStatus(
+          publishStatus,
+          `Published to CMS (${published}). Marked as corrected.`,
+          "ok"
+        );
+      } catch (err) {
+        publishBtn.disabled = false;
+        if (markCorrectedBtn) markCorrectedBtn.disabled = false;
+        setStatus(publishStatus, `Publish failed: ${err.message}`, "error");
+      }
+    });
   }
 
   if (markCorrectedBtn) {
     markCorrectedBtn.addEventListener("click", async () => {
       if (!state.gmail_message_id) {
-        setStatus(markCorrectedStatus, "No Gmail message associated.", "error");
+        setStatus(publishStatus, "No Gmail message associated.", "error");
         return;
       }
+      const ok = window.confirm(
+        "Mark as corrected without sending a CMS update? Use this only if " +
+        "you already published the change manually."
+      );
+      if (!ok) return;
       markCorrectedBtn.disabled = true;
-      setStatus(markCorrectedStatus, "Marking as corrected…", "info");
+      if (publishBtn) publishBtn.disabled = true;
+      setStatus(publishStatus, "Marking as corrected…", "info");
       try {
         const resp = await fetch(
           `/api/corrections/wizard/${encodeURIComponent(state.gmail_message_id)}/mark-corrected`,
@@ -1074,10 +1339,11 @@
         let payload;
         try { payload = JSON.parse(text); } catch (_) { payload = { detail: text }; }
         if (!resp.ok) throw new Error(payload.detail || `HTTP ${resp.status}`);
-        setStatus(markCorrectedStatus, "Marked as corrected.", "ok");
+        setStatus(publishStatus, "Marked as corrected.", "ok");
       } catch (err) {
         markCorrectedBtn.disabled = false;
-        setStatus(markCorrectedStatus, `Error: ${err.message}`, "error");
+        if (publishBtn) publishBtn.disabled = false;
+        setStatus(publishStatus, `Error: ${err.message}`, "error");
       }
     });
   }

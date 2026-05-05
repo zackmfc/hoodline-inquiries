@@ -243,6 +243,41 @@ class Storage:
                 )
                 cur.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS background_jobs (
+                        job_id TEXT PRIMARY KEY,
+                        job_type TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'queued', 'running', 'succeeded', 'failed'
+                        )),
+                        payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        result_json JSONB,
+                        error TEXT,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        max_attempts INTEGER NOT NULL DEFAULT 1,
+                        run_after TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        locked_by TEXT,
+                        locked_at TIMESTAMPTZ,
+                        created_by TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        finished_at TIMESTAMPTZ
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_background_jobs_claim
+                    ON background_jobs(status, run_after, created_at)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_background_jobs_type_created
+                    ON background_jobs(job_type, created_at DESC)
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS verification_events (
                         id BIGSERIAL PRIMARY KEY,
                         run_id TEXT REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
@@ -1208,6 +1243,142 @@ class Storage:
                 )
                 rows = cur.fetchall()
         return [(row.get("subject") or "", row.get("body") or "") for row in rows]
+
+    def enqueue_job(
+        self,
+        *,
+        job_id: str,
+        job_type: str,
+        payload: dict[str, Any],
+        created_by: str | None,
+        max_attempts: int = 1,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO background_jobs (
+                        job_id, job_type, status, payload_json, created_by, max_attempts
+                    )
+                    VALUES (%s, %s, 'queued', %s, %s, %s)
+                    RETURNING job_id, job_type, status, payload_json, result_json, error,
+                              attempts, max_attempts, locked_by, locked_at, created_by,
+                              created_at, updated_at, finished_at
+                    """,
+                    (
+                        job_id,
+                        job_type,
+                        Jsonb(payload),
+                        created_by,
+                        max(1, max_attempts),
+                    ),
+                )
+                row = cur.fetchone()
+        if row is None:
+            raise RuntimeError("Failed to enqueue background job")
+        return dict(row)
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT job_id, job_type, status, payload_json, result_json, error,
+                           attempts, max_attempts, locked_by, locked_at, created_by,
+                           created_at, updated_at, finished_at
+                    FROM background_jobs
+                    WHERE job_id = %s
+                    """,
+                    (job_id,),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def claim_next_job(self, *, worker_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH next_job AS (
+                        SELECT job_id
+                        FROM background_jobs
+                        WHERE status = 'queued'
+                          AND run_after <= NOW()
+                        ORDER BY created_at ASC
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                    )
+                    UPDATE background_jobs AS jobs
+                    SET status = 'running',
+                        attempts = attempts + 1,
+                        locked_by = %s,
+                        locked_at = NOW(),
+                        updated_at = NOW()
+                    FROM next_job
+                    WHERE jobs.job_id = next_job.job_id
+                    RETURNING jobs.job_id, jobs.job_type, jobs.status,
+                              jobs.payload_json, jobs.result_json, jobs.error,
+                              jobs.attempts, jobs.max_attempts, jobs.locked_by,
+                              jobs.locked_at, jobs.created_by, jobs.created_at,
+                              jobs.updated_at, jobs.finished_at
+                    """,
+                    (worker_id,),
+                )
+                row = cur.fetchone()
+        return dict(row) if row is not None else None
+
+    def finish_job(self, *, job_id: str, result: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE background_jobs
+                    SET status = 'succeeded',
+                        result_json = %s,
+                        error = NULL,
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        updated_at = NOW(),
+                        finished_at = NOW()
+                    WHERE job_id = %s
+                    """,
+                    (Jsonb(result), job_id),
+                )
+
+    def fail_job(self, *, job_id: str, error: str) -> None:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE background_jobs
+                    SET status = 'failed',
+                        error = %s,
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        updated_at = NOW(),
+                        finished_at = NOW()
+                    WHERE job_id = %s
+                    """,
+                    (error[:4000], job_id),
+                )
+
+    def requeue_stale_jobs(self, *, stale_after_seconds: int) -> int:
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE background_jobs
+                    SET status = 'queued',
+                        locked_by = NULL,
+                        locked_at = NULL,
+                        updated_at = NOW()
+                    WHERE status = 'running'
+                      AND locked_at < NOW() - (%s::text || ' seconds')::interval
+                      AND attempts < max_attempts
+                    """,
+                    (max(1, stale_after_seconds),),
+                )
+                return cur.rowcount or 0
 
     def save_verification_event(
         self,

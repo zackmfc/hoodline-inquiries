@@ -32,10 +32,15 @@ match_source / match_source_label / match_word_count.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
+from app.cms_client import CMSAPIError, CMSClient
 from app.corrections import generate_search_query
 from app.decodo_client import DecodoClient
 from app.storage import Storage
@@ -63,6 +68,10 @@ _SOURCE_LABELS: dict[str, str] = {
     "google_1_page_title": "<title> of the #1 Google result",
     "google_2_h1": "<h1> of the #2 Google result",
     "google_2_page_title": "<title> of the #2 Google result",
+    "cms_direct_edit_url": "CMS edit URL in the email",
+    "cms_article_slug": "CMS API article_slug lookup",
+    "cms_title": "CMS API title lookup",
+    "cms_query": "CMS API query lookup",
 }
 
 _GOOGLE_SOURCES = {
@@ -101,9 +110,17 @@ class TraceStep:
 
 
 class ArticleLocator:
-    def __init__(self, *, storage: Storage, decodo: DecodoClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        storage: Storage,
+        decodo: DecodoClient | None = None,
+        cms: CMSClient | None = None,
+    ) -> None:
         self.storage = storage
         self.decodo = decodo or DecodoClient()
+        self.cms = cms
+        self.cms_lookup_timeout = float(os.getenv("CMS_ARTICLE_LOOKUP_TIMEOUT_SECONDS", "6"))
 
     def locate(
         self,
@@ -148,6 +165,16 @@ class ArticleLocator:
             ),
             data={"url": email_url, "title": email_title},
         ))
+
+        cms_hit = self._try_cms_lookup_with_timeout(
+            combined=combined,
+            email_url=email_url,
+            email_title=email_title,
+            email_subject=email_subject,
+            trace=trace,
+        )
+        if cms_hit:
+            return cms_hit
 
         # De-dup across all Discord searches: keyed on (lowered words joined, n).
         tried: set[tuple[str, int]] = set()
@@ -233,6 +260,291 @@ class ArticleLocator:
             "hoodline.com/" in lowered
             or "hoodline.impress3.com/" in lowered
         )
+
+    def _extract_article_slug(self, url: str) -> str:
+        if not url:
+            return ""
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return ""
+        if "hoodline.com" not in (parsed.netloc or "").lower():
+            return ""
+        parts = [p for p in (parsed.path or "").split("/") if p]
+        if not parts:
+            return ""
+        ignored = {"articles", "news", "tag", "tags", "cities", "metros"}
+        slug = parts[-1].strip()
+        if not slug or slug.lower() in ignored:
+            return ""
+        return slug
+
+    def _try_cms_lookup_with_timeout(
+        self,
+        *,
+        combined: str,
+        email_url: str,
+        email_title: str,
+        email_subject: str,
+        trace: list[TraceStep],
+    ) -> dict[str, Any] | None:
+        if not self.cms or not self.cms.is_configured():
+            trace.append(TraceStep(
+                step="cms_lookup",
+                action="not_configured",
+                detail="CMS API is not configured; skipping article list/show lookup.",
+            ))
+            return None
+
+        timeout = max(1.0, self.cms_lookup_timeout)
+        cms_trace: list[TraceStep] = []
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(
+            self._try_cms_lookup,
+            combined=combined,
+            email_url=email_url,
+            email_title=email_title,
+            email_subject=email_subject,
+            trace=cms_trace,
+            request_timeout=timeout,
+        )
+        try:
+            result = future.result(timeout=timeout)
+            trace.extend(cms_trace)
+            if result:
+                result["trace"] = [t.to_dict() for t in trace]
+            return result
+        except TimeoutError:
+            future.cancel()
+            trace.append(TraceStep(
+                step="cms_lookup",
+                action="timeout",
+                detail=f"CMS lookup exceeded {timeout:g}s; continuing to Discord/Decodo cascade.",
+            ))
+            return None
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _try_cms_lookup(
+        self,
+        *,
+        combined: str,
+        email_url: str,
+        email_title: str,
+        email_subject: str,
+        trace: list[TraceStep],
+        request_timeout: float,
+    ) -> dict[str, Any] | None:
+        if not self.cms:
+            return None
+
+        start = time.monotonic()
+
+        def remaining_timeout() -> float:
+            elapsed = time.monotonic() - start
+            return max(1.0, request_timeout - elapsed)
+
+        direct_match = CMS_EDIT_URL_PATTERN.search(combined or "")
+        if direct_match:
+            article_id = int(direct_match.group(1))
+            try:
+                article = self.cms.get_article(article_id, timeout=remaining_timeout())
+                trace.append(TraceStep(
+                    step="cms_lookup",
+                    action="hit_direct_edit_url",
+                    detail=f"Validated article #{article_id} from CMS edit URL.",
+                    matched=True,
+                    data={"article_id": article_id, "title": article.get("title")},
+                ))
+            except Exception as exc:
+                trace.append(TraceStep(
+                    step="cms_lookup",
+                    action="direct_edit_url_unvalidated",
+                    detail=f"Found article #{article_id} in CMS edit URL; show endpoint did not validate before fallback: {str(exc)[:160]}",
+                    matched=True,
+                    data={"article_id": article_id},
+                ))
+                article = {"id": article_id}
+            return self._resolved_cms_article(
+                article=article,
+                source="cms_direct_edit_url",
+                trace=trace,
+                article_url=email_url,
+            )
+
+        slug = self._extract_article_slug(email_url)
+        if slug:
+            hit = self._lookup_cms_articles(
+                params={"article_slug": slug},
+                source="cms_article_slug",
+                trace=trace,
+                request_timeout=remaining_timeout(),
+                expected_slug=slug,
+                expected_title=email_title,
+            )
+            if hit:
+                return self._resolved_cms_article(
+                    article=hit,
+                    source="cms_article_slug",
+                    trace=trace,
+                    article_url=email_url,
+                )
+
+        title_candidates = [
+            t for t in (
+                email_title,
+                self._clean_subject_for_lookup(email_subject),
+            )
+            if t
+        ]
+        seen_titles: set[str] = set()
+        for title in title_candidates:
+            key = title.lower()
+            if key in seen_titles:
+                continue
+            seen_titles.add(key)
+            hit = self._lookup_cms_articles(
+                params={"title": title},
+                source="cms_title",
+                trace=trace,
+                request_timeout=remaining_timeout(),
+                expected_title=title,
+            )
+            if hit:
+                return self._resolved_cms_article(
+                    article=hit,
+                    source="cms_title",
+                    trace=trace,
+                    article_url=email_url,
+                )
+
+        query_seed = email_title or self._clean_subject_for_lookup(email_subject)
+        if query_seed:
+            hit = self._lookup_cms_articles(
+                params={"q": query_seed},
+                source="cms_query",
+                trace=trace,
+                request_timeout=remaining_timeout(),
+                expected_title=query_seed,
+            )
+            if hit:
+                return self._resolved_cms_article(
+                    article=hit,
+                    source="cms_query",
+                    trace=trace,
+                    article_url=email_url,
+                )
+
+        return None
+
+    def _lookup_cms_articles(
+        self,
+        *,
+        params: dict[str, Any],
+        source: str,
+        trace: list[TraceStep],
+        request_timeout: float,
+        expected_slug: str = "",
+        expected_title: str = "",
+    ) -> dict[str, Any] | None:
+        if not self.cms:
+            return None
+
+        try:
+            data = self.cms.list_articles(
+                article_slug=params.get("article_slug"),
+                title=params.get("title"),
+                q=params.get("q"),
+                per_page=10,
+                timeout=request_timeout,
+            )
+        except CMSAPIError as exc:
+            trace.append(TraceStep(
+                step="cms_lookup",
+                action=f"error_{source}",
+                detail=str(exc)[:200],
+                data={"params": params, "status_code": exc.status_code},
+            ))
+            return None
+        except Exception as exc:
+            trace.append(TraceStep(
+                step="cms_lookup",
+                action=f"error_{source}",
+                detail=str(exc)[:200],
+                data={"params": params},
+            ))
+            return None
+
+        articles = [
+            item for item in data.get("articles", [])
+            if isinstance(item, dict)
+        ]
+        hit = self._best_cms_article(
+            articles,
+            expected_slug=expected_slug,
+            expected_title=expected_title,
+        )
+        trace.append(TraceStep(
+            step="cms_lookup",
+            action=f"{'hit' if hit else 'miss'}_{source}",
+            detail=(
+                f"CMS returned {len(articles)} candidate(s)"
+                + (f"; selected article #{hit.get('id')}" if hit else ".")
+            ),
+            matched=bool(hit),
+            data={
+                "params": params,
+                "candidate_count": len(articles),
+                "selected": {
+                    "id": hit.get("id"),
+                    "title": hit.get("title"),
+                    "article_slug": hit.get("article_slug"),
+                } if hit else None,
+            },
+        ))
+        return hit
+
+    def _best_cms_article(
+        self,
+        articles: list[dict[str, Any]],
+        *,
+        expected_slug: str = "",
+        expected_title: str = "",
+    ) -> dict[str, Any] | None:
+        if not articles:
+            return None
+
+        if expected_slug:
+            for article in articles:
+                if str(article.get("article_slug") or "").strip().lower() == expected_slug.lower():
+                    return article
+
+        if not expected_title:
+            return articles[0]
+
+        scored = [
+            (self._title_overlap_score(expected_title, str(article.get("title") or "")), article)
+            for article in articles
+        ]
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        best_score, best = scored[0]
+        return best if best_score >= 0.45 else None
+
+    def _title_overlap_score(self, expected: str, actual: str) -> float:
+        expected_words = {w.lower() for w in self._words_of(expected) if len(w) >= 3}
+        actual_words = {w.lower() for w in self._words_of(actual) if len(w) >= 3}
+        if not expected_words or not actual_words:
+            return 0.0
+        return len(expected_words & actual_words) / max(1, len(expected_words))
+
+    def _clean_subject_for_lookup(self, subject: str) -> str:
+        cleaned = re.sub(
+            r"^\s*(re:\s*)?(correction|corrected|update|wrong|error|mistake)\s*[:\-–—]\s*",
+            "",
+            subject or "",
+            flags=re.IGNORECASE,
+        ).strip()
+        return cleaned[:160]
 
     def _words_of(self, segment: str) -> list[str]:
         cleaned = re.sub(r"[^\w\s]", " ", segment or "").strip()
@@ -549,6 +861,50 @@ class ArticleLocator:
                 data={"query": query, "result_count": len(results)},
             ))
         return keep
+
+    def _resolved_cms_article(
+        self,
+        *,
+        article: dict[str, Any],
+        source: str,
+        trace: list[TraceStep],
+        article_url: str = "",
+    ) -> dict[str, Any]:
+        raw_id = article.get("id")
+        try:
+            article_id = int(raw_id)
+        except (TypeError, ValueError):
+            article_id = None
+
+        cms_base = self.cms.api_base_url if self.cms else "https://hoodline.impress3.com"
+        cms_edit_url = f"{cms_base.rstrip('/')}/articles/{article_id}/edit" if article_id else None
+        title = str(article.get("title") or "").strip()
+        slug = str(article.get("article_slug") or "").strip()
+
+        resolved_article_url = article_url
+        if not resolved_article_url and slug:
+            resolved_article_url = f"https://hoodline.com/{slug}"
+
+        return {
+            "found": bool(article_id),
+            "cms_edit_url": cms_edit_url,
+            "article_id": article_id,
+            "article_url": resolved_article_url or None,
+            "matched_post": {
+                "id": None,
+                "title": title,
+                "channel": None,
+                "message_id": None,
+            },
+            "authoritative_title": title,
+            "match_source": source,
+            "match_source_label": _SOURCE_LABELS.get(source, source),
+            "match_word_count": 0,
+            "match_words": [],
+            "google_search_warning": False,
+            "google_query": "",
+            "trace": [t.to_dict() for t in trace],
+        }
 
     def _resolved(
         self,

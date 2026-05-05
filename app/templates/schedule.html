@@ -55,5 +55,5 @@
 <script>
   window.SCHEDULE_TASKS = {{ schedule_tasks_json | safe }};
 </script>
-<script src="/static/schedule.js"></script>
+<script src="/static/schedule.js?v={{ static_asset_version }}"></script>
 {% endblock %}

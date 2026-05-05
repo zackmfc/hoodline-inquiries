@@ -51,5 +51,5 @@
 <script>
   window.PIPELINE_STEPS = {{ pipeline_steps_json | safe }};
 </script>
-<script src="/static/pipeline.js"></script>
+<script src="/static/pipeline.js?v={{ static_asset_version }}"></script>
 {% endblock %}

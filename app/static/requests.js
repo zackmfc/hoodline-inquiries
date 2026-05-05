@@ -11,6 +11,11 @@
     corrected: { text: "Corrected", cls: "status-done" },
     triaged_pending: { text: "Triaged · Pending", cls: "status-active" },
     triaged_rejected: { text: "Triaged · Rejected", cls: "status-late" },
+    processing_assess: { text: "Assessing", cls: "status-active" },
+    processing_locate: { text: "Locating", cls: "status-active" },
+    processing_generate: { text: "Generating", cls: "status-active" },
+    processing_publish: { text: "Publishing", cls: "status-active" },
+    job_failed: { text: "Job failed", cls: "status-late" },
   };
 
   const tabs = Array.from(document.querySelectorAll(".requests-tab"));
@@ -50,13 +55,51 @@
     }
   }
 
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function parseResponseJSON(resp) {
+    const text = await resp.text();
+    let payload;
+    try { payload = text ? JSON.parse(text) : {}; } catch (_) { payload = { detail: text }; }
+    return payload;
+  }
+
+  async function waitForJob(jobPayload) {
+    const jobId = jobPayload && jobPayload.job_id;
+    if (!jobId) return jobPayload;
+
+    let delay = 750;
+    for (;;) {
+      await sleep(delay);
+      const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+      const payload = await parseResponseJSON(resp);
+      if (!resp.ok) {
+        throw new Error(payload.detail || `HTTP ${resp.status}`);
+      }
+      if (payload.status === "succeeded") {
+        return payload.result || {};
+      }
+      if (payload.status === "failed") {
+        throw new Error(payload.error || "Background job failed");
+      }
+      delay = Math.min(2500, Math.round(delay * 1.25));
+    }
+  }
+
+  async function unwrapMaybeJob(payload) {
+    if (payload && payload.job_id && (payload.background || payload.status)) {
+      return waitForJob(payload);
+    }
+    return payload;
+  }
+
   async function fetchBucket(bucket) {
     const resp = await fetch(
       `/api/corrections/requests?bucket=${encodeURIComponent(bucket)}&limit=100`
     );
-    const text = await resp.text();
-    let payload;
-    try { payload = JSON.parse(text); } catch (_) { payload = { detail: text }; }
+    const payload = await parseResponseJSON(resp);
     if (!resp.ok) {
       throw new Error(payload.detail || `HTTP ${resp.status}`);
     }
@@ -69,9 +112,7 @@
       `/api/corrections/wizard/${encodeURIComponent(gmailMessageId)}/mark-corrected`,
       { method: "POST" }
     );
-    const text = await resp.text();
-    let payload;
-    try { payload = JSON.parse(text); } catch (_) { payload = { detail: text }; }
+    const payload = await parseResponseJSON(resp);
     if (!resp.ok) {
       throw new Error(payload.detail || `HTTP ${resp.status}`);
     }
@@ -125,11 +166,16 @@
       : "/corrections";
     link.href = href;
 
-    if (statusKey === "completed" && item.gmail_message_id) {
+    if (item.gmail_message_id && statusKey !== "corrected") {
       actionsEl.hidden = false;
       markBtn.addEventListener("click", async (e) => {
         e.preventDefault();
         e.stopPropagation();
+        const subjectLabel = item.subject ? `"${item.subject}"` : "this request";
+        const ok = window.confirm(
+          `Mark ${subjectLabel} as corrected?\n\nThis moves the row to the Completed tab and records that the correction has been applied in the CMS. You can't undo this from the UI.`
+        );
+        if (!ok) return;
         markBtn.disabled = true;
         markBtn.textContent = "Marking…";
         try {
@@ -284,12 +330,11 @@
     kwBtn.disabled = true;
     try {
       const resp = await fetch("/api/corrections/keyword-analysis?top_n=20&min_count=2");
-      const text = await resp.text();
-      let payload;
-      try { payload = JSON.parse(text); } catch (_) { payload = { detail: text }; }
+      let payload = await parseResponseJSON(resp);
       if (!resp.ok) {
         throw new Error(payload.detail || `HTTP ${resp.status}`);
       }
+      payload = await unwrapMaybeJob(payload);
       kwResults.hidden = false;
       renderKeywordBucket(
         "pending",

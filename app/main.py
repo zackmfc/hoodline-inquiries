@@ -4,6 +4,9 @@ import json
 import logging
 import os
 import re
+import socket
+import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,7 +22,12 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.article_locator import ArticleLocator
 from app.auth import hash_password, verify_password
 from app.classifier import MessageClassifier
-from app.cms_client import CMSClient
+from app.cms_client import (
+    WIZARD_FIELD_TO_ASSIGNMENT_KEY,
+    CMSAPIError,
+    CMSAuthError,
+    CMSClient,
+)
 from app.corrections import (
     assess_email,
     extract_cms_edit_link,
@@ -43,6 +51,12 @@ LOG_FILE = LOG_DIR / "pipeline.log"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+STATIC_ASSET_VERSION = os.getenv("STATIC_ASSET_VERSION")
+if not STATIC_ASSET_VERSION:
+    static_dir = BASE_DIR / "app" / "static"
+    static_mtimes = [path.stat().st_mtime for path in static_dir.glob("*") if path.is_file()]
+    STATIC_ASSET_VERSION = str(int(max(static_mtimes, default=datetime.now().timestamp())))
 
 app = FastAPI(title="Hoodline Inquiries Dashboard")
 app.add_middleware(
@@ -80,7 +94,7 @@ draft_stager = DraftStager(cms_base_url=cms_base_url)
 discord_cache = DiscordCachePopulator()
 cms_client = CMSClient()
 decodo_client = DecodoClient()
-article_locator = ArticleLocator(storage=storage, decodo=decodo_client)
+article_locator = ArticleLocator(storage=storage, decodo=decodo_client, cms=cms_client)
 
 logger = logging.getLogger("hoodline.pipeline")
 logger.setLevel(logging.INFO)
@@ -282,6 +296,12 @@ class StepExecutionRequest(BaseModel):
 def startup() -> None:
     storage.init_schema()
     bootstrap_superuser()
+    start_background_job_workers()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    stop_background_job_workers()
 
 
 def bootstrap_superuser() -> None:
@@ -309,6 +329,211 @@ def bootstrap_superuser() -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+BACKGROUND_JOB_POLL_SECONDS = float(os.getenv("BACKGROUND_JOB_POLL_SECONDS", "1.0"))
+BACKGROUND_JOB_WORKER_CONCURRENCY = int(os.getenv("BACKGROUND_JOB_WORKER_CONCURRENCY", "2"))
+BACKGROUND_JOB_STALE_SECONDS = int(os.getenv("BACKGROUND_JOB_STALE_SECONDS", "1800"))
+_job_stop_event = threading.Event()
+_job_threads: list[threading.Thread] = []
+_job_worker_lock = threading.Lock()
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def _serialize_job(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "job_id": row.get("job_id"),
+        "job_type": row.get("job_type"),
+        "status": row.get("status"),
+        "result": row.get("result_json"),
+        "error": row.get("error"),
+        "attempts": row.get("attempts"),
+        "max_attempts": row.get("max_attempts"),
+        "locked_by": row.get("locked_by"),
+        "created_by": row.get("created_by"),
+        "created_at": _json_safe(row.get("created_at")),
+        "updated_at": _json_safe(row.get("updated_at")),
+        "finished_at": _json_safe(row.get("finished_at")),
+    }
+
+
+def _job_response(row: dict[str, Any], *, status_code: int = 202) -> JSONResponse:
+    payload = _serialize_job(row)
+    payload["background"] = True
+    return JSONResponse(payload, status_code=status_code)
+
+
+def enqueue_background_job(
+    *,
+    job_type: str,
+    payload: dict[str, Any],
+    user: dict[str, Any],
+    max_attempts: int = 2,
+) -> dict[str, Any]:
+    return storage.enqueue_job(
+        job_id=str(uuid4()),
+        job_type=job_type,
+        payload=_json_safe(payload),
+        created_by=user.get("username"),
+        max_attempts=max_attempts,
+    )
+
+
+def start_background_job_workers() -> None:
+    if os.getenv("BACKGROUND_JOBS_ENABLED", "true").strip().lower() in {"0", "false", "no"}:
+        return
+    with _job_worker_lock:
+        if _job_threads:
+            return
+        _job_stop_event.clear()
+        concurrency = max(1, min(BACKGROUND_JOB_WORKER_CONCURRENCY, 16))
+        for idx in range(concurrency):
+            worker_id = f"{socket.gethostname()}:{os.getpid()}:{idx}"
+            thread = threading.Thread(
+                target=_background_job_loop,
+                args=(worker_id,),
+                name=f"background-job-worker-{idx}",
+                daemon=True,
+            )
+            thread.start()
+            _job_threads.append(thread)
+
+
+def stop_background_job_workers() -> None:
+    _job_stop_event.set()
+    with _job_worker_lock:
+        threads = list(_job_threads)
+        _job_threads.clear()
+    for thread in threads:
+        thread.join(timeout=5)
+
+
+def _background_job_loop(worker_id: str) -> None:
+    while not _job_stop_event.is_set():
+        try:
+            storage.requeue_stale_jobs(stale_after_seconds=BACKGROUND_JOB_STALE_SECONDS)
+            job = storage.claim_next_job(worker_id=worker_id)
+            if job is None:
+                _job_stop_event.wait(BACKGROUND_JOB_POLL_SECONDS)
+                continue
+            _run_background_job(job)
+        except Exception:
+            logger.error(
+                json.dumps(
+                    {
+                        "timestamp": now_iso(),
+                        "event": "background_job_worker_error",
+                        "worker_id": worker_id,
+                        "traceback": traceback.format_exc(),
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            _job_stop_event.wait(BACKGROUND_JOB_POLL_SECONDS)
+
+
+def _run_background_job(job: dict[str, Any]) -> None:
+    job_id = job["job_id"]
+    job_type = job["job_type"]
+    payload = job.get("payload_json") or {}
+    try:
+        result = run_background_job_handler(job_type, payload, job)
+    except Exception as exc:
+        error = str(exc) or exc.__class__.__name__
+        storage.fail_job(job_id=job_id, error=error)
+        _record_wizard_job_failure(job_type, payload, error)
+        logger.error(
+            json.dumps(
+                {
+                    "timestamp": now_iso(),
+                    "event": "background_job_failed",
+                    "job_id": job_id,
+                    "job_type": job_type,
+                    "error": error,
+                    "traceback": traceback.format_exc(),
+                },
+                ensure_ascii=True,
+            )
+        )
+        return
+    storage.finish_job(job_id=job_id, result=_json_safe(result or {}))
+
+
+def run_background_job_handler(
+    job_type: str, payload: dict[str, Any], job: dict[str, Any]
+) -> dict[str, Any]:
+    if job_type == "corrections_inbox":
+        return _run_corrections_inbox(
+            limit=int(payload.get("limit") or 5),
+            include_processed=bool(payload.get("include_processed")),
+        )
+    if job_type == "corrections_assess":
+        return _run_corrections_assess(payload, job.get("created_by"))
+    if job_type == "corrections_parse_discord":
+        return _run_corrections_parse_discord(payload, job.get("created_by"))
+    if job_type == "corrections_locate_discord":
+        return _run_corrections_locate_discord(payload, job.get("created_by"))
+    if job_type == "corrections_generate":
+        return _run_corrections_generate(payload, job.get("created_by"))
+    if job_type == "cms_wizard_fields":
+        return _run_cms_wizard_fields(int(payload.get("article_id") or 0))
+    if job_type == "discord_refresh_incremental":
+        return _run_discord_refresh_incremental()
+    if job_type == "wizard_publish":
+        return _run_wizard_publish(payload, job.get("created_by"))
+    if job_type == "corrections_keyword_analysis":
+        return _run_corrections_keyword_analysis(
+            top_n=int(payload.get("top_n") or 20),
+            min_count=int(payload.get("min_count") or 2),
+        )
+    raise ValueError(f"Unknown background job type: {job_type}")
+
+
+def _record_wizard_job_failure(job_type: str, payload: dict[str, Any], error: str) -> None:
+    gmail_message_id = str(payload.get("gmail_message_id") or "").strip()
+    if not gmail_message_id:
+        return
+    step_by_job = {
+        "corrections_assess": "assess_job",
+        "corrections_parse_discord": "discord_job",
+        "corrections_locate_discord": "discord_job",
+        "corrections_generate": "generate_job",
+        "wizard_publish": "publish_job",
+    }
+    step_key = step_by_job.get(job_type)
+    if not step_key:
+        return
+    try:
+        storage.save_wizard_step(
+            gmail_message_id=gmail_message_id,
+            step_key=step_key,
+            step_data={"status": "failed", "error": error},
+            status="job_failed",
+            touched_by=str(payload.get("touched_by") or "") or None,
+        )
+    except Exception:
+        logger.warning(
+            json.dumps(
+                {
+                    "timestamp": now_iso(),
+                    "event": "wizard_job_failure_record_failed",
+                    "job_type": job_type,
+                    "gmail_message_id": gmail_message_id,
+                },
+                ensure_ascii=True,
+            )
+        )
 
 
 def append_run_log(run_id: str, step_id: str, message: str, payload: dict[str, Any] | None = None) -> None:
@@ -356,6 +581,15 @@ def ensure_admin_api(request: Request) -> dict[str, Any]:
     return user
 
 
+@app.get("/api/jobs/{job_id}")
+async def api_job_status(job_id: str, request: Request) -> JSONResponse:
+    ensure_admin_api(request)
+    row = storage.get_job(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JSONResponse(_serialize_job(row))
+
+
 def page_user_or_redirect(request: Request, next_path: str) -> dict[str, Any] | RedirectResponse:
     user = session_user(request)
     if user is None:
@@ -371,6 +605,7 @@ def render_context(request: Request, **kwargs: Any) -> dict[str, Any]:
         "current_user": user,
         "is_admin": bool(user and user["is_admin"]),
         "is_superuser": bool(user and user["is_superuser"]),
+        "static_asset_version": STATIC_ASSET_VERSION,
     }
     ctx.update(kwargs)
     return ctx
@@ -988,6 +1223,11 @@ WIZARD_TERMINAL_STATUSES = {
 }
 
 WIZARD_PENDING_STATUSES = [
+    "processing_assess",
+    "processing_locate",
+    "processing_generate",
+    "processing_publish",
+    "job_failed",
     "assessed",
     "located",
     "image_only",
@@ -1018,24 +1258,13 @@ def _parse_sender_email(raw: str) -> tuple[str, str]:
     return raw, ""
 
 
-@app.get("/api/corrections/inbox")
-async def api_corrections_inbox(
-    request: Request,
-    limit: int = 5,
-    include_processed: bool = False,
-) -> JSONResponse:
-    ensure_admin_api(request)
-
+def _run_corrections_inbox(*, limit: int, include_processed: bool) -> dict[str, Any]:
     if limit < 1 or limit > 100:
-        raise HTTPException(
-            status_code=400,
-            detail="limit must be between 1 and 100",
-        )
+        raise ValueError("limit must be between 1 and 100")
 
     if not gmail_client.configured:
-        raise HTTPException(
-            status_code=400,
-            detail="Gmail API is not configured. Set GMAIL_DELEGATED_USER plus GMAIL_SERVICE_ACCOUNT_FILE or GMAIL_SERVICE_ACCOUNT_JSON.",
+        raise ValueError(
+            "Gmail API is not configured. Set GMAIL_DELEGATED_USER plus GMAIL_SERVICE_ACCOUNT_FILE or GMAIL_SERVICE_ACCOUNT_JSON."
         )
 
     query = os.getenv(
@@ -1049,20 +1278,17 @@ async def api_corrections_inbox(
             max_results=limit,
         )
     except ValueError as exc:
-        # "No Gmail messages matched" is a normal empty-queue case.
         message = str(exc)
         if message.startswith("No Gmail messages matched"):
-            return JSONResponse({
+            return {
                 "messages": [],
                 "query": query,
                 "total_fetched": 0,
                 "filtered_count": 0,
-            })
-        raise HTTPException(status_code=400, detail=message) from exc
+            }
+        raise
 
-    message_ids = [
-        (m.get("gmail_message_id") or "") for m in fetched
-    ]
+    message_ids = [(m.get("gmail_message_id") or "") for m in fetched]
     stored_by_id = storage.get_wizard_emails_by_ids(
         [mid for mid in message_ids if mid]
     )
@@ -1130,12 +1356,40 @@ async def api_corrections_inbox(
             "wizard_state": (stored or {}).get("state_json") or {},
         })
 
-    return JSONResponse({
+    return {
         "messages": results,
         "query": query,
         "total_fetched": len(fetched),
         "filtered_count": filtered_count,
-    })
+    }
+
+
+@app.get("/api/corrections/inbox")
+async def api_corrections_inbox(
+    request: Request,
+    limit: int = 5,
+    include_processed: bool = False,
+) -> JSONResponse:
+    user = ensure_admin_api(request)
+
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be between 1 and 100",
+        )
+
+    if not gmail_client.configured:
+        raise HTTPException(
+            status_code=400,
+            detail="Gmail API is not configured. Set GMAIL_DELEGATED_USER plus GMAIL_SERVICE_ACCOUNT_FILE or GMAIL_SERVICE_ACCOUNT_JSON.",
+        )
+
+    row = enqueue_background_job(
+        job_type="corrections_inbox",
+        payload={"limit": limit, "include_processed": include_processed},
+        user=user,
+    )
+    return _job_response(row)
 
 
 @app.get("/api/corrections/wizard/{gmail_message_id}")
@@ -1316,12 +1570,21 @@ async def api_corrections_keyword_analysis(
     correction emails use but newsletter/spam rarely do. The Rejected-distinctive
     list is the mirror, useful as Gmail filter exclusions.
     """
-    ensure_admin_api(request)
+    user = ensure_admin_api(request)
     if top_n < 1 or top_n > 100:
         raise HTTPException(status_code=400, detail="top_n must be between 1 and 100")
     if min_count < 1 or min_count > 50:
         raise HTTPException(status_code=400, detail="min_count must be between 1 and 50")
 
+    row = enqueue_background_job(
+        job_type="corrections_keyword_analysis",
+        payload={"top_n": top_n, "min_count": min_count},
+        user=user,
+    )
+    return _job_response(row)
+
+
+def _run_corrections_keyword_analysis(*, top_n: int, min_count: int) -> dict[str, Any]:
     pending_docs_pairs = storage.fetch_wizard_subject_body_by_statuses(
         statuses=WIZARD_PENDING_STATUSES,
     )
@@ -1345,14 +1608,12 @@ async def api_corrections_keyword_analysis(
         top_n_per_size=top_n,
     )
 
-    return JSONResponse(
-        {
-            "pending_count": len(pending_docs),
-            "rejected_count": len(rejected_docs),
-            "pending_distinctive": pending_distinctive,
-            "rejected_distinctive": rejected_distinctive,
-        }
-    )
+    return {
+        "pending_count": len(pending_docs),
+        "rejected_count": len(rejected_docs),
+        "pending_distinctive": pending_distinctive,
+        "rejected_distinctive": rejected_distinctive,
+    }
 
 
 @app.post("/api/corrections/wizard/clear")
@@ -1389,30 +1650,19 @@ def _persist_wizard_email_base(
     )
 
 
-@app.post("/api/corrections/assess")
-async def api_corrections_assess(
-    payload: CorrectionAssessRequest, request: Request
-) -> JSONResponse:
-    user = ensure_admin_api(request)
-    if not payload.subject.strip() and not payload.body.strip():
-        raise HTTPException(status_code=400, detail="subject or body is required")
-
-    try:
-        result = assess_email(
-            sender_name=payload.sender_name,
-            sender_email=payload.sender_email,
-            subject=payload.subject,
-            body=payload.body,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Assessment failed: {exc}") from exc
+def _run_corrections_assess(payload: dict[str, Any], touched_by: str | None) -> dict[str, Any]:
+    result = assess_email(
+        sender_name=str(payload.get("sender_name") or ""),
+        sender_email=str(payload.get("sender_email") or ""),
+        subject=str(payload.get("subject") or ""),
+        body=str(payload.get("body") or ""),
+    )
 
     both_above_four = result["CRVS"] > 4 and result["SAS"] > 4
     response = {**result, "gate_passed": both_above_four}
+    gmail_message_id = str(payload.get("gmail_message_id") or "").strip()
 
-    if payload.gmail_message_id.strip():
+    if gmail_message_id:
         if result.get("image_only"):
             new_status = "image_only"
         elif both_above_four:
@@ -1421,29 +1671,84 @@ async def api_corrections_assess(
             new_status = "gate_failed"
 
         _persist_wizard_email_base(
-            payload.gmail_message_id.strip(),
+            gmail_message_id,
+            sender_name=str(payload.get("sender_name") or ""),
+            sender_email=str(payload.get("sender_email") or ""),
+            subject=str(payload.get("subject") or ""),
+            body=str(payload.get("body") or ""),
+        )
+        storage.save_wizard_step(
+            gmail_message_id=gmail_message_id,
+            step_key="assess",
+            step_data={
+                "form": {
+                    "sender_name": str(payload.get("sender_name") or ""),
+                    "sender_email": str(payload.get("sender_email") or ""),
+                    "subject": str(payload.get("subject") or ""),
+                    "body": str(payload.get("body") or ""),
+                },
+                "response": response,
+            },
+            status=new_status,
+            touched_by=touched_by,
+        )
+
+    return response
+
+
+@app.post("/api/corrections/assess")
+async def api_corrections_assess(
+    payload: CorrectionAssessRequest, request: Request
+) -> JSONResponse:
+    user = ensure_admin_api(request)
+    if not payload.subject.strip() and not payload.body.strip():
+        raise HTTPException(status_code=400, detail="subject or body is required")
+
+    gmail_message_id = payload.gmail_message_id.strip()
+    if gmail_message_id:
+        _persist_wizard_email_base(
+            gmail_message_id,
             sender_name=payload.sender_name,
             sender_email=payload.sender_email,
             subject=payload.subject,
             body=payload.body,
         )
         storage.save_wizard_step(
-            gmail_message_id=payload.gmail_message_id.strip(),
-            step_key="assess",
-            step_data={
-                "form": {
-                    "sender_name": payload.sender_name,
-                    "sender_email": payload.sender_email,
-                    "subject": payload.subject,
-                    "body": payload.body,
-                },
-                "response": response,
-            },
-            status=new_status,
+            gmail_message_id=gmail_message_id,
+            step_key="assess_job",
+            step_data={"status": "queued"},
+            status="processing_assess",
             touched_by=user["username"],
         )
 
-    return JSONResponse(response)
+    row = enqueue_background_job(
+        job_type="corrections_assess",
+        payload={**payload.model_dump(), "touched_by": user["username"]},
+        user=user,
+    )
+    return _job_response(row)
+
+
+def _run_corrections_parse_discord(
+    payload: dict[str, Any], touched_by: str | None
+) -> dict[str, Any]:
+    result = extract_cms_edit_link(str(payload.get("message") or ""))
+    gmail_message_id = str(payload.get("gmail_message_id") or "").strip()
+
+    if gmail_message_id and result.get("found"):
+        storage.save_wizard_step(
+            gmail_message_id=gmail_message_id,
+            step_key="discord",
+            step_data={
+                "source": "manual_paste",
+                "message": str(payload.get("message") or ""),
+                "result": result,
+            },
+            status="located",
+            touched_by=touched_by,
+        )
+
+    return result
 
 
 @app.post("/api/corrections/parse-discord")
@@ -1454,22 +1759,21 @@ async def api_corrections_parse_discord(
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="message is required")
 
-    result = extract_cms_edit_link(payload.message)
-
-    if payload.gmail_message_id.strip() and result.get("found"):
+    if payload.gmail_message_id.strip():
         storage.save_wizard_step(
             gmail_message_id=payload.gmail_message_id.strip(),
-            step_key="discord",
-            step_data={
-                "source": "manual_paste",
-                "message": payload.message,
-                "result": result,
-            },
-            status="located",
+            step_key="discord_job",
+            step_data={"status": "queued", "source": "manual_paste"},
+            status="processing_locate",
             touched_by=user["username"],
         )
 
-    return JSONResponse(result)
+    row = enqueue_background_job(
+        job_type="corrections_parse_discord",
+        payload={**payload.model_dump(), "touched_by": user["username"]},
+        user=user,
+    )
+    return _job_response(row)
 
 
 class LocateDiscordRequest(BaseModel):
@@ -1478,6 +1782,32 @@ class LocateDiscordRequest(BaseModel):
     article_url_hint: str = ""
     article_title_hint: str = ""
     gmail_message_id: str = ""
+
+
+def _run_corrections_locate_discord(
+    payload: dict[str, Any], touched_by: str | None
+) -> dict[str, Any]:
+    result = article_locator.locate(
+        email_subject=str(payload.get("subject") or ""),
+        email_body=str(payload.get("body") or ""),
+        hinted_url=str(payload.get("article_url_hint") or ""),
+        hinted_title=str(payload.get("article_title_hint") or ""),
+    )
+
+    gmail_message_id = str(payload.get("gmail_message_id") or "").strip()
+    if gmail_message_id and result.get("found"):
+        storage.save_wizard_step(
+            gmail_message_id=gmail_message_id,
+            step_key="discord",
+            step_data={
+                "source": "auto_locate",
+                "result": result,
+            },
+            status="located",
+            touched_by=touched_by,
+        )
+
+    return result
 
 
 @app.post("/api/corrections/locate-discord")
@@ -1492,29 +1822,61 @@ async def api_corrections_locate_discord(
             detail="subject or body is required to locate the article",
         )
 
-    try:
-        result = article_locator.locate(
-            email_subject=payload.subject,
-            email_body=payload.body,
-            hinted_url=payload.article_url_hint,
-            hinted_title=payload.article_title_hint,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Locate failed: {exc}") from exc
-
-    if payload.gmail_message_id.strip() and result.get("found"):
+    if payload.gmail_message_id.strip():
         storage.save_wizard_step(
             gmail_message_id=payload.gmail_message_id.strip(),
-            step_key="discord",
-            step_data={
-                "source": "auto_locate",
-                "result": result,
-            },
-            status="located",
+            step_key="discord_job",
+            step_data={"status": "queued", "source": "auto_locate"},
+            status="processing_locate",
             touched_by=user["username"],
         )
 
-    return JSONResponse(result)
+    row = enqueue_background_job(
+        job_type="corrections_locate_discord",
+        payload={**payload.model_dump(), "touched_by": user["username"]},
+        user=user,
+    )
+    return _job_response(row)
+
+
+def _run_corrections_generate(payload: dict[str, Any], touched_by: str | None) -> dict[str, Any]:
+    result = generate_correction(
+        sender_name=str(payload.get("sender_name") or ""),
+        sender_email=str(payload.get("sender_email") or ""),
+        subject=str(payload.get("subject") or ""),
+        body=str(payload.get("body") or ""),
+        title=str(payload.get("title") or ""),
+        meta_description=str(payload.get("meta_description") or ""),
+        meta_title=str(payload.get("meta_title") or ""),
+        excerpt=str(payload.get("excerpt") or ""),
+        article_body=str(payload.get("article_body") or ""),
+        featured_image_attribution=str(payload.get("featured_image_attribution") or ""),
+        image_url=str(payload.get("image_url") or ""),
+        decodo=decodo_client,
+    )
+
+    gmail_message_id = str(payload.get("gmail_message_id") or "").strip()
+    if gmail_message_id:
+        storage.save_wizard_step(
+            gmail_message_id=gmail_message_id,
+            step_key="generate",
+            step_data={
+                "cms_inputs": {
+                    "title": str(payload.get("title") or ""),
+                    "meta_description": str(payload.get("meta_description") or ""),
+                    "meta_title": str(payload.get("meta_title") or ""),
+                    "excerpt": str(payload.get("excerpt") or ""),
+                    "article_body": str(payload.get("article_body") or ""),
+                    "featured_image_attribution": str(payload.get("featured_image_attribution") or ""),
+                    "image_url": str(payload.get("image_url") or ""),
+                },
+                "response": result,
+            },
+            status="completed",
+            touched_by=touched_by,
+        )
+
+    return result
 
 
 @app.post("/api/corrections/generate")
@@ -1528,47 +1890,21 @@ async def api_corrections_generate(
             detail="At least Title or Body is required to generate a correction",
         )
 
-    try:
-        result = generate_correction(
-            sender_name=payload.sender_name,
-            sender_email=payload.sender_email,
-            subject=payload.subject,
-            body=payload.body,
-            title=payload.title,
-            meta_description=payload.meta_description,
-            meta_title=payload.meta_title,
-            excerpt=payload.excerpt,
-            article_body=payload.article_body,
-            featured_image_attribution=payload.featured_image_attribution,
-            image_url=payload.image_url,
-            decodo=decodo_client,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Correction generation failed: {exc}") from exc
-
     if payload.gmail_message_id.strip():
         storage.save_wizard_step(
             gmail_message_id=payload.gmail_message_id.strip(),
-            step_key="generate",
-            step_data={
-                "cms_inputs": {
-                    "title": payload.title,
-                    "meta_description": payload.meta_description,
-                    "meta_title": payload.meta_title,
-                    "excerpt": payload.excerpt,
-                    "article_body": payload.article_body,
-                    "featured_image_attribution": payload.featured_image_attribution,
-                    "image_url": payload.image_url,
-                },
-                "response": result,
-            },
-            status="completed",
+            step_key="generate_job",
+            step_data={"status": "queued"},
+            status="processing_generate",
             touched_by=user["username"],
         )
 
-    return JSONResponse(result)
+    row = enqueue_background_job(
+        job_type="corrections_generate",
+        payload={**payload.model_dump(), "touched_by": user["username"]},
+        user=user,
+    )
+    return _job_response(row)
 
 
 @app.get("/setup", response_class=HTMLResponse)
@@ -1625,14 +1961,36 @@ def _run_setup_checks() -> list[dict[str, Any]]:
         checks.append({"id": "discord", "ok": False, "detail": "Not configured. Article resolver will rely on direct URLs or manual seeding."})
 
     # 5. CMS API
-    cms_api_url = os.getenv("CMS_API_BASE_URL", os.getenv("CMS_BASE_URL", ""))
-    cms_api_key = os.getenv("CMS_API_KEY", "")
-    if cms_api_url and cms_api_key:
-        checks.append({"id": "cms_api", "ok": True, "detail": f"CMS API configured at {cms_api_url} with API key."})
-    elif cms_api_url:
-        checks.append({"id": "cms_api", "ok": True, "detail": f"CMS API URL set ({cms_api_url}) but no API key. Auth may fail."})
+    summary = cms_client.configuration_summary()
+    cms_api_url = summary.get("api_base_url") or ""
+    auth_mode = summary.get("auth_mode")
+    if not cms_api_url:
+        checks.append({
+            "id": "cms_api",
+            "ok": False,
+            "detail": "CMS_API_BASE_URL not set. Article auto-fetch and publish will not work.",
+        })
+    elif auth_mode == "static_token":
+        checks.append({
+            "id": "cms_api",
+            "ok": True,
+            "detail": f"CMS API at {cms_api_url} using static CMS_API_KEY (legacy bearer).",
+        })
+    elif auth_mode == "login":
+        checks.append({
+            "id": "cms_api",
+            "ok": True,
+            "detail": f"CMS API at {cms_api_url} using login flow ({summary.get('email')}).",
+        })
     else:
-        checks.append({"id": "cms_api", "ok": False, "detail": "CMS API not configured. Article fetching and staging will not work."})
+        checks.append({
+            "id": "cms_api",
+            "ok": False,
+            "detail": (
+                f"CMS API URL set ({cms_api_url}) but no credentials. Set "
+                "CMS_API_EMAIL + CMS_API_PASSWORD."
+            ),
+        })
 
     # 6. Session secret
     secret = os.getenv("APP_SESSION_SECRET", "")
@@ -1848,6 +2206,15 @@ async def api_discord_refresh(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+def _run_discord_refresh_incremental() -> dict[str, Any]:
+    if not discord_cache.is_configured():
+        raise ValueError("DISCORD_BOT_TOKEN or DISCORD_GUILD_ID not configured")
+    since = storage.latest_editorial_posted_at(source="discord")
+    result = discord_cache.populate(storage, since=since)
+    result["since"] = since.isoformat() if since else None
+    return result
+
+
 @app.post("/api/discord/refresh-incremental")
 async def api_discord_refresh_incremental(request: Request) -> JSONResponse:
     """Scan only messages posted since the newest cached one.
@@ -1856,42 +2223,222 @@ async def api_discord_refresh_incremental(request: Request) -> JSONResponse:
     just-published Discord editor post is guaranteed to be in the cache
     before the locator queries it.
     """
-    ensure_admin_api(request)
+    user = ensure_admin_api(request)
     if not discord_cache.is_configured():
         return JSONResponse(
             {"status": "error", "message": "DISCORD_BOT_TOKEN or DISCORD_GUILD_ID not configured"},
             status_code=400,
         )
 
-    since = storage.latest_editorial_posted_at(source="discord")
-    result = discord_cache.populate(storage, since=since)
-    result["since"] = since.isoformat() if since else None
-    return JSONResponse(result)
+    row = enqueue_background_job(
+        job_type="discord_refresh_incremental",
+        payload={},
+        user=user,
+        max_attempts=2,
+    )
+    return _job_response(row)
 
 
 @app.get("/api/cms/articles/{article_id}")
 async def api_cms_read_article(article_id: int, request: Request) -> JSONResponse:
-    """Read article fields from the Hoodline CMS API."""
+    """Read raw article fields from the Hoodline CMS API.
+
+    Per API_ENDPOINT_GUIDE.md, this GET is currently routed but does not
+    return useful JSON yet. We surface whatever the controller does send
+    back so the issue is visible from the dashboard.
+    """
     ensure_admin_api(request)
+    if not cms_client.is_configured():
+        raise HTTPException(status_code=503, detail="CMS API is not configured")
     try:
-        article = cms_client.read_article(article_id)
-        return JSONResponse(article)
-    except Exception as exc:
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=502)
+        return JSONResponse(cms_client.get_article(article_id))
+    except CMSAPIError as exc:
+        raise HTTPException(
+            status_code=exc.status_code or 502,
+            detail=str(exc),
+        ) from exc
+
+
+@app.get("/api/cms/articles/{article_id}/wizard-fields")
+async def api_cms_wizard_fields(article_id: int, request: Request) -> JSONResponse:
+    """Pull article fields from the CMS API in the shape the wizard's step
+    3 form expects. The wizard auto-calls this when step 3 unlocks.
+    """
+    user = ensure_admin_api(request)
+    if not cms_client.is_configured():
+        raise HTTPException(status_code=503, detail="CMS API is not configured")
+    if article_id <= 0:
+        raise HTTPException(status_code=400, detail="article_id is required")
+    row = enqueue_background_job(
+        job_type="cms_wizard_fields",
+        payload={"article_id": article_id},
+        user=user,
+        max_attempts=2,
+    )
+    return _job_response(row)
+
+
+def _run_cms_wizard_fields(article_id: int) -> dict[str, Any]:
+    if not cms_client.is_configured():
+        raise ValueError("CMS API is not configured")
+    if article_id <= 0:
+        raise ValueError("article_id is required")
+    return cms_client.fetch_article_fields_for_wizard(article_id)
+
+
+class CMSAssignmentUpdate(BaseModel):
+    title: str | None = None
+    meta_title: str | None = None
+    meta_description: str | None = None
+    excerpt: str | None = None
+    social_media_excerpt: str | None = None
+    text: str | None = None
+    featured_image_attribution: str | None = None
+    category_ids: list[int] | None = None
+    metro_area_ids: list[int] | None = None
+    assigned_editor_id: int | None = None
+    assigned_writer_id: int | None = None
 
 
 @app.patch("/api/cms/articles/{article_id}")
-async def api_cms_write_article(article_id: int, request: Request) -> JSONResponse:
-    """Write updated fields to an article via the Hoodline CMS API."""
+async def api_cms_update_article(
+    article_id: int,
+    payload: CMSAssignmentUpdate,
+    request: Request,
+) -> JSONResponse:
+    """PATCH article fields via the Hoodline CMS API's `assignment` envelope."""
     ensure_admin_api(request)
-    body = await request.json()
+    if not cms_client.is_configured():
+        raise HTTPException(status_code=503, detail="CMS API is not configured")
+
+    assignment = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not assignment:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
     try:
-        result = cms_client.write_article(article_id, body)
-        return JSONResponse(result)
+        return JSONResponse(cms_client.update_article(article_id, assignment))
     except ValueError as exc:
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
-    except Exception as exc:
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=502)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except CMSAPIError as exc:
+        raise HTTPException(
+            status_code=exc.status_code or 502,
+            detail=str(exc),
+        ) from exc
+
+
+class WizardPublishRequest(BaseModel):
+    article_id: int
+    fields: dict[str, str] = Field(default_factory=dict)
+
+
+def _accepted_publish_fields(fields: dict[str, Any]) -> dict[str, str]:
+    return {
+        key: str(value)
+        for key, value in fields.items()
+        if key in WIZARD_FIELD_TO_ASSIGNMENT_KEY
+    }
+
+
+def _run_wizard_publish(payload: dict[str, Any], touched_by: str | None) -> dict[str, Any]:
+    gmail_message_id = str(payload.get("gmail_message_id") or "").strip()
+    article_id = int(payload.get("article_id") or 0)
+    fields = payload.get("fields") or {}
+    if not isinstance(fields, dict):
+        fields = {}
+
+    if not gmail_message_id:
+        raise ValueError("gmail_message_id is required")
+    if not cms_client.is_configured():
+        raise ValueError("CMS API is not configured")
+    if article_id <= 0:
+        raise ValueError("article_id is required")
+
+    accepted = _accepted_publish_fields(fields)
+    if not accepted:
+        raise ValueError(
+            "No publishable fields. Allowed: "
+            f"{', '.join(sorted(WIZARD_FIELD_TO_ASSIGNMENT_KEY))}"
+        )
+
+    cms_response = cms_client.update_article_from_wizard_fields(article_id, accepted)
+
+    storage.save_wizard_step(
+        gmail_message_id=gmail_message_id,
+        step_key="publish",
+        step_data={
+            "article_id": article_id,
+            "fields_published": list(accepted.keys()),
+            "cms_response": cms_response,
+        },
+        status="corrected",
+        touched_by=touched_by,
+    )
+
+    return {
+        "published": True,
+        "article_id": article_id,
+        "fields_published": list(accepted.keys()),
+        "cms_response": cms_response,
+        "status": "corrected",
+    }
+
+
+@app.post("/api/corrections/wizard/{gmail_message_id}/publish")
+async def api_corrections_wizard_publish(
+    gmail_message_id: str,
+    payload: WizardPublishRequest,
+    request: Request,
+) -> JSONResponse:
+    """Publish the user-edited correction to the CMS via PATCH and mark
+    the wizard email as corrected.
+
+    Body shape:
+        {
+          "article_id": 123,
+          "fields": {
+            "title": "...",         // any subset of WIZARD_FIELD_TO_ASSIGNMENT_KEY
+            "article_body": "...",  // mapped to assignment.text
+            ...
+          }
+        }
+    """
+    user = ensure_admin_api(request)
+    if not gmail_message_id.strip():
+        raise HTTPException(status_code=400, detail="gmail_message_id is required")
+    if not cms_client.is_configured():
+        raise HTTPException(status_code=503, detail="CMS API is not configured")
+    if payload.article_id <= 0:
+        raise HTTPException(status_code=400, detail="article_id is required")
+
+    accepted = _accepted_publish_fields(payload.fields)
+    if not accepted:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No publishable fields. Allowed: "
+                f"{', '.join(sorted(WIZARD_FIELD_TO_ASSIGNMENT_KEY))}"
+            ),
+        )
+
+    storage.save_wizard_step(
+        gmail_message_id=gmail_message_id.strip(),
+        step_key="publish_job",
+        step_data={"status": "queued", "fields": list(accepted.keys())},
+        status="processing_publish",
+        touched_by=user["username"],
+    )
+
+    row = enqueue_background_job(
+        job_type="wizard_publish",
+        payload={
+            "gmail_message_id": gmail_message_id.strip(),
+            "article_id": payload.article_id,
+            "fields": accepted,
+            "touched_by": user["username"],
+        },
+        user=user,
+    )
+    return _job_response(row)
 
 
 @app.get("/api/pipeline/steps")
