@@ -1,0 +1,1066 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Agentic AI Editor Article Read API",
+    "version": "2.0.0",
+    "description": "Hardened server-to-server contract. Deploy the hardening release and provision a token before use. Article-read application tokens use explicit all_regions/article_metros scope, expire after 90 days, and can be revoked. Editorial tokens require an approved bound user. Do not send a caller-selected user_id."
+  },
+  "servers": [
+    {
+      "url": "https://editor.agentictopic.com",
+      "description": "Production HTTPS origin"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development only"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    },
+    {
+      "apiKey": []
+    }
+  ],
+  "paths": {
+    "/api/articles/search": {
+      "get": {
+        "summary": "Search editorial and original titles",
+        "operationId": "searchArticles",
+        "description": "Case-insensitive literal substring match on hl_title OR title. Non-archived records only; bound actor region scope applies. Results ordered by local ID ascending.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
+            "description": "Trimmed title substring; SQL wildcard characters are literal."
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1,
+              "maximum": 999999999
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "deprecated": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Omit. Application credentials reject this parameter. For a user-bound client only, it must exactly match that client's user."
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid query or pagination",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid, expired, revoked, disabled, or unbound credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Bearer"
+              }
+            }
+          },
+          "403": {
+            "description": "Actor mismatch or insufficient client access",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 60
+                },
+                "description": "Seconds until next minute; present for the shared client limit, absent for the IP limit."
+              }
+            }
+          },
+          "503": {
+            "description": "Shared rate-limit service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Full matching records and pagination; an empty result is successful.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/articles/{id}": {
+      "get": {
+        "summary": "Retrieve one full article by local ID",
+        "operationId": "getArticle",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Local id from a search result, not a CMS reference."
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "required": false,
+            "deprecated": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Omit. Application credentials reject this parameter. For a user-bound client only, it must exactly match that client's user."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Invalid, expired, revoked, disabled, or unbound credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Bearer"
+              }
+            }
+          },
+          "403": {
+            "description": "Actor mismatch or insufficient client access",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Absent, archived, or out-of-scope article",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 60
+                },
+                "description": "Seconds until next minute; present for the shared client limit, absent for the IP limit."
+              }
+            }
+          },
+          "503": {
+            "description": "Shared rate-limit service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Article object directly, without a wrapper.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Article"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Operator-issued ApiClient token; 32\u201372 URL-safe ASCII characters. Send only this credential header or X-Api-Key, never both."
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Api-Key",
+        "description": "Alternative to Authorization; do not send both."
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "Article": {
+        "type": "object",
+        "required": [
+          "id",
+          "hl_title",
+          "hl_meta",
+          "hl_excerpt",
+          "full_content",
+          "addresses",
+          "fact_check_rating",
+          "interest_rating",
+          "status",
+          "picked_up_by_id",
+          "submitted_by_id",
+          "published_at",
+          "created_at",
+          "updated_at",
+          "fact_matching",
+          "florid_rating",
+          "newsworthiness_rating",
+          "meta_description",
+          "synopsis",
+          "author_name",
+          "primary_tag",
+          "main_content",
+          "image_url",
+          "image_caption",
+          "image_source",
+          "metro",
+          "image_query_json",
+          "unsplash_images_json",
+          "image_photographer",
+          "image_source_url",
+          "image_refresh_status",
+          "wikimedia_images_json",
+          "archived",
+          "openai_queries",
+          "gov_images_json",
+          "image_ai_recommendations_json",
+          "auto_selected_image_url",
+          "auto_selected_image_source",
+          "auto_selected_image_source_url",
+          "title",
+          "url",
+          "text",
+          "image_pipeline_state",
+          "assigned_editor_id",
+          "fact_matching_json",
+          "fact_matching_score",
+          "uniqueness_json",
+          "uniqueness_score",
+          "business_images_json",
+          "agency_images_json",
+          "copyright_risk_score",
+          "hot_news_risk_score",
+          "publish_after",
+          "research_json",
+          "cms_synced_image_url",
+          "cms_sync_error",
+          "cms_sync_error_at",
+          "editing_locked_by_id",
+          "editing_lock_heartbeat_at",
+          "published_by_id",
+          "citation_fix_json",
+          "image_visible_description",
+          "cms_created_at",
+          "ignored_at",
+          "freshness_score",
+          "classification_json",
+          "intent_tier",
+          "queued_by_id",
+          "image_photographer_url",
+          "image_editor_confirmed_at",
+          "source_link_count",
+          "image_editor_confirmed_by_id",
+          "image_copyright_ack_at",
+          "image_copyright_ack_by_id",
+          "image_copyright_ack_url",
+          "image_copyright_risk_json",
+          "degenerate_flagged_at",
+          "degenerate_reason",
+          "fact_editing_locked_by_id",
+          "fact_editing_lock_heartbeat_at",
+          "image_origin_url",
+          "released_at",
+          "release_attempts",
+          "cms_scheduled_at",
+          "commentary_fix_json",
+          "editorial_triage_json",
+          "low_source_override_at",
+          "low_source_override_by_id",
+          "queued_at",
+          "publication_urgency",
+          "publication_urgent",
+          "cms_article_reference",
+          "cms_edit_url",
+          "editor_edit_url",
+          "api_url"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Local Article ID; use for the detail endpoint."
+          },
+          "hl_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hl_meta": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hl_excerpt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "full_content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "addresses": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Rails-deserialized address list."
+          },
+          "fact_check_rating": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "interest_rating": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "picked_up_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "submitted_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "published_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "fact_matching": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "florid_rating": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "newsworthiness_rating": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "meta_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "synopsis": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "primary_tag": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "main_content": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_caption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "metro": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_query_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "unsplash_images_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "image_photographer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_source_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_refresh_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wikimedia_images_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "archived": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "openai_queries": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gov_images_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "image_ai_recommendations_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "auto_selected_image_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auto_selected_image_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auto_selected_image_source_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_pipeline_state": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "assigned_editor_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fact_matching_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "fact_matching_score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "uniqueness_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "uniqueness_score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "business_images_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "agency_images_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "copyright_risk_score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hot_news_risk_score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "publish_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "research_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "cms_synced_image_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cms_sync_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cms_sync_error_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "editing_locked_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "editing_lock_heartbeat_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "published_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "citation_fix_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "image_visible_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cms_created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "ignored_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "freshness_score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "intent_tier": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "queued_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "image_photographer_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_editor_confirmed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "source_link_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "image_editor_confirmed_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "image_copyright_ack_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "image_copyright_ack_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "image_copyright_ack_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image_copyright_risk_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "degenerate_flagged_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "degenerate_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fact_editing_locked_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "fact_editing_lock_heartbeat_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "image_origin_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "release_attempts": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cms_scheduled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "commentary_fix_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "editorial_triage_json": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "low_source_override_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "low_source_override_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "queued_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "publication_urgency": {
+            "type": [
+              "object",
+              "array",
+              "null"
+            ]
+          },
+          "publication_urgent": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "cms_article_reference": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Remote CMS edit reference, numeric ID or slug; not the local ID."
+          },
+          "cms_edit_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "External CMS edit link; null for local-only articles.",
+            "format": "uri"
+          },
+          "editor_edit_url": {
+            "type": "string",
+            "description": "Local editor edit link; requires normal browser login.",
+            "format": "uri"
+          },
+          "api_url": {
+            "type": "string",
+            "description": "Detail endpoint; send the same credential header.",
+            "format": "uri"
+          }
+        },
+        "additionalProperties": true
+      },
+      "SearchResponse": {
+        "type": "object",
+        "required": [
+          "articles",
+          "pagination",
+          "query"
+        ],
+        "properties": {
+          "articles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Article"
+            }
+          },
+          "query": {
+            "type": "string"
+          },
+          "pagination": {
+            "type": "object",
+            "required": [
+              "page",
+              "limit",
+              "total",
+              "total_pages"
+            ],
+            "properties": {
+              "page": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "total_pages": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

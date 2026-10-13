@@ -5,3 +5,4 @@ secrets/
 *.json
 logs/*.log
 logs/runs/*.log
+!docs/agentic-editor/ARTICLE_SEARCH_API.openapi.json

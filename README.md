@@ -397,3 +397,20 @@ docker exec hoodline_postgres psql -U hoodline -d hoodline -c "select count(*) f
 - The older Pipeline Tester and the newer Corrections Wizard overlap conceptually but use different code paths and database records.
 - `DraftStager` is mostly for the older pipeline. The primary wizard publish path uses `CMSClient.update_article_from_wizard_fields()`.
 - If external credentials are missing, some UI paths will be unavailable rather than degraded. `/setup` is the fastest way to see what is configured.
+
+## Agentic AI Editor article lookup API
+
+The dedicated reader credential is configured separately from the Hoodline CMS
+read/write credentials:
+
+- `EDITOR_BASE_URL`: Agentic AI Editor origin (`https://editor.agentictopic.com`).
+- `EDITOR_API_TOKEN`: private article-read application token, kept in `.env` only.
+- `EDITOR_API_TIMEOUT_SECONDS`: request timeout (default 15 seconds).
+
+See [the integration handoff](docs/agentic-editor/ARTICLE_API_HANDOFF.md),
+[API guide](docs/agentic-editor/ARTICLE_SEARCH_API.md), and
+[OpenAPI contract](docs/agentic-editor/ARTICLE_SEARCH_API.openapi.json).
+The application-reader token must be activated on the hardened editor release
+before production requests can authenticate. Existing CMS publishing credentials
+and the current article-locator implementation remain separate; backend client
+code should read the `EDITOR_*` settings when integrating the lookup endpoint.
